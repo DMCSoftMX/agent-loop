@@ -1,0 +1,69 @@
+name: Specify (reusable)
+
+# The SPECIFY phase of the agent loop, maintained ONCE here. Projects don't copy it — their thin
+# stub calls it: `uses: DMCSoftMX/agent-loop/.github/workflows/specify.yml@vX`. The trigger
+# (issues: labeled) and the label guard live in the STUB (see stubs/loop.yml); this file is pure
+# logic. PROTOTYPE: 1 of 7 workflows — plan/implement/@claude/review/ci/pr-gate/spec-guard follow
+# the same shape.
+on:
+  workflow_call:
+    inputs:
+      model:
+        description: Claude model for this phase (per-repo override, optional).
+        type: string
+        default: claude-sonnet-4-6
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN:
+        required: true
+
+jobs:
+  specify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write       # commits the spec on a branch in the CALLER repo
+      pull-requests: write  # opens the spec PR
+      issues: write         # progress comment (track_progress)
+      id-token: write
+    steps:
+      # 1) The CALLER repo — where CLAUDE.md lives and where the spec PR is created.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      # 2) This engine at the EXACT version being called. `github.job_workflow_sha` is the commit
+      #    of THIS reusable workflow, so the templates always match the `@vX` pinned in the stub —
+      #    no version to duplicate. (Add a token here if agent-loop is a private repo.)
+      - uses: actions/checkout@v4
+        with:
+          repository: DMCSoftMX/agent-loop
+          ref: ${{ github.job_workflow_sha }}
+          path: .agent-loop
+          fetch-depth: 1
+
+      - uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # REQUIRED for issue events: without this the agent runs but does NOT post progress.
+          track_progress: "true"
+          prompt: |
+            You are a SPECIFY agent (SDD phase 1). Capture INTENT as a durable artifact.
+            Do NOT design the solution and do NOT write product code.
+
+            1. Read the issue that triggered this event (it was labeled `specify`) and any
+               discussion in its comments. Read CLAUDE.md (repo root) for conventions.
+            2. Author a spec by copying the template at `.agent-loop/templates/spec.md` to
+               `specs/${{ github.event.issue.number }}-<short-kebab-slug>/spec.md` and filling
+               every `<<...>>`: problem/motivation, goal, scope (in/out), user-visible behavior,
+               CONCRETE and VERIFIABLE acceptance criteria, a LIGHTWEIGHT "Approach & tasks"
+               (a few lines + a short task checklist), edge cases/risks and open questions.
+            3. Keep "Approach & tasks" light. If it starts needing real architecture, new
+               contracts or a data model, do NOT expand it: note under "Open questions" that this
+               needs the `plan` escalation. If the issue is already crisp the spec can be short —
+               but it must be an artifact.
+            4. Create a branch `spec/${{ github.event.issue.number }}-<slug>`, commit ONLY the new
+               file under `specs/`, and open a PR against `develop` with body
+               `Refs #${{ github.event.issue.number }}` (NOT `Fixes` — merging the spec must not
+               close the issue). Title: `spec: <goal> (#${{ github.event.issue.number }})`.
+          claude_args: |
+            --model ${{ inputs.model }}

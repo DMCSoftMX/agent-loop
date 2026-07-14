@@ -1,0 +1,25 @@
+# .github/workflows/loop.yml  — copy this into EACH project repo (the only workflow it needs).
+#
+# THIN STUB: it just routes events to the central engine. All logic lives in DMCSoftMX/agent-loop;
+# here you only pin the version (@vX). Renovate (stubs/renovate.json) bumps that pin for you.
+#
+# PROTOTYPE: only the `specify` route is shown. The rest are the same shape — one job each with
+# its guard + `uses`:
+#   plan            → if label == plan            → plan.yml
+#   claude-implement→ if label == claude-implement→ implement.yml
+#   @claude         → on: issue_comment           → claude.yml
+#   review/pr-gate/spec-guard → on: pull_request  → review.yml / pr-gate.yml / spec-guard.yml
+#   ci              → on: push                     → ci.yml
+name: Agent loop
+
+on:
+  issues:
+    types: [labeled]
+
+jobs:
+  specify:
+    if: github.event.label.name == 'specify'
+    uses: DMCSoftMX/agent-loop/.github/workflows/specify.yml@v0.1.0
+    secrets: inherit
+    # with:
+    #   model: claude-sonnet-4-6   # optional per-repo override

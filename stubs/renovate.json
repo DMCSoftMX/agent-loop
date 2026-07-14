@@ -1,0 +1,14 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+  "description": "Copy into each project repo. Keeps the agent-loop engine version in the stub up to date: when a new agent-loop tag is released, Renovate opens a bump PR here (which you review and merge — the human gate stays).",
+  "packageRules": [
+    {
+      "description": "Group all agent-loop reusable-workflow bumps into one PR",
+      "matchManagers": ["github-actions"],
+      "matchDepNames": ["DMCSoftMX/agent-loop"],
+      "groupName": "agent-loop engine",
+      "commitMessageTopic": "agent-loop engine"
+    }
+  ]
+}
