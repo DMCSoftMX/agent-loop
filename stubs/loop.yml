@@ -19,6 +19,16 @@ on:
   push:
     branches: [develop, main]
 
+# The engine's reusable jobs declare the token scopes they need (contents/PR/issues write, plus
+# id-token for OIDC). A called reusable workflow can NEVER exceed the caller's grant, so the stub
+# must set the ceiling here. Without this, every write phase dies at startup ("startup_failure")
+# because a repo's default GITHUB_TOKEN is read-only.
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  id-token: write
+
 jobs:
   specify:
     if: github.event_name == 'issues' && github.event.label.name == 'specify'

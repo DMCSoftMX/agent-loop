@@ -1,8 +1,9 @@
 name: Plan (reusable)
 
-# OPTIONAL deep-design escalation (SDD). Same shape as specify: workflow_call, templates fetched
-# at runtime. Reads the merged spec and writes plan.md + tasks.md into the caller's specs/.
-# The `plan` label guard lives in the project stub.
+# OPTIONAL deep-design escalation (SDD). Same shape as specify. Reads the merged spec and writes
+# plan.md + tasks.md into the caller's specs/. The `plan` label guard lives in the project stub.
+# Both templates are INLINED in the prompt below — no checkout of this (private) engine repo, and
+# they are versioned with this file (whatever `@vX` the stub pins).
 on:
   workflow_call:
     inputs:
@@ -27,12 +28,6 @@ jobs:
       - uses: actions/checkout@v4          # caller repo (spec.md, CLAUDE.md)
         with:
           fetch-depth: 1
-      - uses: actions/checkout@v4          # this engine at the called version (templates)
-        with:
-          repository: DMCSoftMX/agent-loop
-          ref: ${{ github.job_workflow_sha }}
-          path: .agent-loop
-          fetch-depth: 1
 
       - uses: anthropics/claude-code-action@v1
         with:
@@ -46,11 +41,63 @@ jobs:
             1. Find the spec dir for this issue: `specs/${{ github.event.issue.number }}-*/`.
                Read its `spec.md` (source of truth) and CLAUDE.md. If no spec.md exists, stop and
                comment that `specify` must run and be merged first.
-            2. Author `plan.md` and `tasks.md` in that SAME dir, copying the structure from
-               `.agent-loop/templates/`. The plan must be CONCRETE: real affected files,
-               contracts/interfaces/data shapes, risks+mitigations, and a test strategy mapping
-               each acceptance criterion to how it will be proven (flag what CI can't verify).
-               `tasks.md` is an ordered checklist of discrete, individually verifiable tasks.
+            2. Author `plan.md` and `tasks.md` in that SAME dir, using EXACTLY the templates below.
+               Keep every heading; replace every `<<...>>` (set Refs to #${{ github.event.issue.number }}).
+               The plan must be CONCRETE: real affected files, contracts/interfaces/data shapes,
+               risks+mitigations, and a test strategy mapping each acceptance criterion to how it
+               will be proven (flag what CI can't verify). `tasks.md` is an ordered checklist of
+               discrete, individually verifiable tasks.
+
+               ===== BEGIN plan.md TEMPLATE =====
+               # Plan: <<title>>
+
+               > **Refs:** #<<issue>>  ·  derived from [`spec.md`](spec.md)  ·  **only for `plan`-escalated work**
+               > The deep HOW — supersedes the spec's lightweight "Approach & tasks". Design
+               > decisions, not restated requirements. Skip this file entirely for normal work.
+
+               ## Approach
+
+               <<The chosen technical approach in a few sentences, and briefly why over the alternatives.>>
+
+               ## Affected areas / files
+
+               | File / module | Change |
+               |---|---|
+               | <<path>> | <<what changes and why>> |
+
+               ## Contracts / interfaces
+
+               <<New or changed APIs, function signatures, schemas, events, data shapes. Be concrete
+               — the implementer should not have to invent these.>>
+
+               ## Data / state
+
+               <<Migrations, new state, persistence changes. Omit if none.>>
+
+               ## Risks & mitigations
+
+               - <<risk>> → <<mitigation>>
+
+               ## Test strategy
+
+               <<What proves each acceptance criterion: unit / integration / manual runtime check.
+               Flag anything CI cannot verify (needs human verification).>>
+               ===== END plan.md TEMPLATE =====
+
+               ===== BEGIN tasks.md TEMPLATE =====
+               # Tasks: <<title>>
+
+               > **Refs:** #<<issue>>  ·  derived from [`plan.md`](plan.md)  ·  **only for `plan`-escalated work**
+               > Discrete, ordered, checkable. The implementer ticks these off as it goes and
+               > commits the updated file alongside the code.
+
+               - [ ] <<task 1 — small enough to verify on its own>>
+               - [ ] <<task 2>>
+               - [ ] <<task 3>>
+               - [ ] Update/adds tests covering the acceptance criteria
+               - [ ] Self-verify: lint · typecheck · test pass locally
+               ===== END tasks.md TEMPLATE =====
+
             3. Do NOT restate the spec; design against it. Do NOT change `spec.md`; if it is wrong
                or ambiguous, note it in the PR body and leave the open question.
             4. Create a branch `plan/${{ github.event.issue.number }}-<slug>`, commit ONLY files

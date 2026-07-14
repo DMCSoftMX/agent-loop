@@ -20,7 +20,8 @@ agent-loop/                              ← DMCSoftMX/agent-loop (semver-tagged
 │   ├── pr-gate.yml       binding definition-of-done gate
 │   ├── spec-guard.yml    anti-drift: code change must reconcile its spec
 │   └── ci.yml            stack-aware validate (reads setup.env)
-├── templates/            spec.md · plan.md · tasks.md   (fetched at runtime)
+│   (spec/plan/tasks templates are INLINED in the specify/plan prompts — no separate files,
+│    no engine checkout, so this repo can stay private with zero per-repo tokens.)
 └── stubs/                what each PROJECT repo copies (once)
     ├── loop.yml          the thin router stub (.github/workflows/loop.yml)
     └── renovate.json     auto-bumps the engine version across projects
@@ -45,9 +46,14 @@ That's the whole footprint. Plus the per-repo data that rightly stays local: `CL
 
 ## Runtime model (the key tricks)
 
-- **Two checkouts:** the reusable workflow checks out the **caller repo** (default — for
-  `CLAUDE.md`, `setup.env`, `specs/`) and **this engine** at the exact version being called
-  (`github.job_workflow_sha` — for `templates/`). No version to duplicate.
+- **One checkout, no engine token:** the reusable checks out only the **caller repo** (for
+  `CLAUDE.md`, `setup.env`, `specs/`). The spec/plan/tasks **templates are inlined in the phase
+  prompts**, so the runner never checks out this engine repo — which means `agent-loop` stays
+  **private** with no per-repo PAT, and the template is automatically the one from the pinned
+  `@vX` (it travels with the workflow file).
+- **The stub grants the token ceiling:** a called reusable can't exceed the caller's permissions,
+  so `stubs/loop.yml` sets top-level `permissions:` (contents/PR/issues/id-token write). Without
+  it every write phase dies at **startup** on a read-only default token.
 - **Stack from `setup.env` at runtime:** `implement`, `claude` and `ci` `source setup.env` from
   the caller, set up the toolchain per `STACK`, and use `INSTALL_CMD` / `ALLOWED_VERIFY_TOOLS` /
   the lint·typecheck·test·build commands. So the stub needs **zero** stack config.
@@ -74,7 +80,7 @@ protection on `develop` to require:
 | Central (here, versioned) | Per-repo (in each project) |
 |---|---|
 | Reusable workflows (logic) | Thin stub (`loop.yml`) |
-| `templates/`, prompts | `CLAUDE.md`, `setup.env` |
+| Prompts + inlined spec/plan/tasks templates | `CLAUDE.md`, `setup.env` |
 | Gate logic (pr-gate, spec-guard) | `specs/` (generated data) |
 | — | Labels + branch protection (settings) |
 
