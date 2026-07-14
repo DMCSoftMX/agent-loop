@@ -1,60 +1,73 @@
-# agent-loop — central engine (prototype)
+# agent-loop — central engine
 
 The **versioned engine** for the spec-driven agent loop. Its logic, templates and prompts are
 maintained **once, here**. Each project repo carries only a thin stub that *calls* this engine —
 no copied workflows. Change something here + tag → Renovate opens a bump PR in every project.
 
-> **Status: prototype.** Only the `specify` phase is wired (1 of 7). `plan`, `implement`,
-> `@claude`, `review`, `ci`, `pr-gate`, `spec-guard` follow the **identical** pattern.
-> This directory is the content that would become its own repo, `DMCSoftMX/agent-loop`.
+> **Status: all 8 phases wired** as reusable workflows. A project consumes them by copying one
+> thin stub ([`stubs/loop.yml`](stubs/loop.yml)).
 
 ## Structure
 
 ```
-agent-loop/                              ← future DMCSoftMX/agent-loop repo (semver-tagged)
-├── .github/workflows/
-│   └── specify.yml          on: workflow_call   ← the reusable SPECIFY phase
-├── templates/
-│   └── spec.md              the spec template, fetched at runtime
-└── stubs/                   what each PROJECT repo copies (once)
-    ├── loop.yml             the thin caller stub (.github/workflows/loop.yml)
-    └── renovate.json        auto-bumps the engine version across projects
+agent-loop/                              ← DMCSoftMX/agent-loop (semver-tagged)
+├── .github/workflows/                   ← the reusable engine (on: workflow_call)
+│   ├── specify.yml       phase 1 · writes spec.md
+│   ├── plan.yml          optional escalation · deep plan.md + tasks.md
+│   ├── implement.yml     agent implements against the spec
+│   ├── claude.yml        interactive @claude
+│   ├── review.yml        PR review vs the spec · emits REVIEW-VERDICT
+│   ├── pr-gate.yml       binding definition-of-done gate
+│   ├── spec-guard.yml    anti-drift: code change must reconcile its spec
+│   └── ci.yml            stack-aware validate (reads setup.env)
+├── templates/            spec.md · plan.md · tasks.md   (fetched at runtime)
+└── stubs/                what each PROJECT repo copies (once)
+    ├── loop.yml          the thin router stub (.github/workflows/loop.yml)
+    └── renovate.json     auto-bumps the engine version across projects
 ```
 
 ## How a project consumes it
 
-The project repo has one thin workflow, `.github/workflows/loop.yml` (see [`stubs/loop.yml`](stubs/loop.yml)):
+Copy [`stubs/loop.yml`](stubs/loop.yml) to `.github/workflows/loop.yml`. That single file routes
+every event (labels, `@claude`, PRs, push) to the reusable workflows here, pinned to `@vX`:
 
 ```yaml
-on: { issues: { types: [labeled] } }
 jobs:
   specify:
-    if: github.event.label.name == 'specify'
-    uses: DMCSoftMX/agent-loop/.github/workflows/specify.yml@v0.1.0
+    if: github.event_name == 'issues' && github.event.label.name == 'specify'
+    uses: DMCSoftMX/agent-loop/.github/workflows/specify.yml@v0.2.0
     secrets: inherit
+  # … plan · implement · claude · review · pr-gate · spec-guard · ci (same shape)
 ```
 
 That's the whole footprint. Plus the per-repo data that rightly stays local: `CLAUDE.md`,
 `setup.env`, `specs/`.
 
-## Runtime model (the key trick)
+## Runtime model (the key tricks)
 
-When the reusable workflow runs it does **two** checkouts:
-
-1. **The caller repo** (default checkout) → reads `CLAUDE.md`, writes the spec into `specs/`.
-2. **This engine**, at the *exact version being used* (`github.job_workflow_sha`) → gets
-   `templates/` + prompts. No version duplication: the templates always match the `@vX` in the stub.
-
-So the project needs zero config in the stub — `setup.env`/`CLAUDE.md`/`specs/` are read from the
-caller at runtime.
+- **Two checkouts:** the reusable workflow checks out the **caller repo** (default — for
+  `CLAUDE.md`, `setup.env`, `specs/`) and **this engine** at the exact version being called
+  (`github.job_workflow_sha` — for `templates/`). No version to duplicate.
+- **Stack from `setup.env` at runtime:** `implement`, `claude` and `ci` `source setup.env` from
+  the caller, set up the toolchain per `STACK`, and use `INSTALL_CMD` / `ALLOWED_VERIFY_TOOLS` /
+  the lint·typecheck·test·build commands. So the stub needs **zero** stack config.
 
 ## Versioning & propagation
 
-- Engine is released with **semver tags** (`v0.3.0`, `v0.4.0`, …).
+- Engine released with **semver tags** (`v0.2.0`, `v0.3.0`, …).
 - Projects pin `@vX` in their stub. **Renovate** ([`stubs/renovate.json`](stubs/renovate.json))
-  detects a new tag and opens a **bump PR** in each project → you merge it (human gate preserved).
-- This resolves the moving-tag-vs-pinned dilemma: propagation is automatic **but reviewable**,
-  not applied blindly.
+  opens a **bump PR** in each project on a new tag → you merge it (human gate preserved).
+
+## Branch protection ⚠️ (check-name change)
+
+As reusable workflows, the required-check **context is `<stub-job> / <engine-job>`**. Set branch
+protection on `develop` to require:
+
+- `ci / validate`
+- `pr-gate / pr-gate`
+- `spec-guard / spec-guard`
+
+(and on `main`: `ci / validate` only — the gates skip on release PRs).
 
 ## What stays central vs per-repo
 

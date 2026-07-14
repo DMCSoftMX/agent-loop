@@ -1,0 +1,43 @@
+name: Spec Guard (reusable)
+
+# Anti-drift. A code change resolving a spec'd issue must reconcile the spec (or attest it's
+# still accurate). Read-only (checkout + git diff) → safe for forks. Gates PRs into develop.
+on:
+  workflow_call:
+
+jobs:
+  spec-guard:
+    name: spec-guard
+    if: github.event.pull_request.base.ref == 'develop'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Check the spec is reconciled with the code
+        env:
+          BODY: ${{ github.event.pull_request.body }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          FILES=$(git diff --name-only "$BASE_SHA" "$HEAD_SHA")
+
+          N=$(printf '%s' "$BODY" | grep -oiE '(fix(es|ed)?|close[sd]?|resolve[sd]?)[[:space:]]+#[0-9]+' | grep -oE '[0-9]+' | head -n1 || true)
+          if [ -z "$N" ]; then echo "No linked issue — nothing to guard."; exit 0; fi
+
+          SPEC_DIR=$(ls -d "specs/${N}-"* 2>/dev/null | head -n1 || true)
+          if [ -z "$SPEC_DIR" ]; then echo "No spec for issue #$N — nothing to guard."; exit 0; fi
+
+          if printf '%s\n' "$FILES" | grep -vE '^(specs/|\.github/)' | grep -q .; then CODE_CHANGED=yes; else CODE_CHANGED=no; fi
+          if printf '%s\n' "$FILES" | grep -qE "^${SPEC_DIR}/"; then SPEC_CHANGED=yes; else SPEC_CHANGED=no; fi
+
+          if [ "$CODE_CHANGED" = yes ] && [ "$SPEC_CHANGED" = no ]; then
+            if printf '%s' "$BODY" | grep -qiE '^[[:space:]]*-[[:space:]]*\[x\][[:space:]].*spec.*(accurate|unchanged|up[- ]?to[- ]?date)'; then
+              echo "Code changed without a spec update, but the PR attests the spec is still accurate. OK."
+              exit 0
+            fi
+            echo "::error::This PR changes code for issue #$N (spec: $SPEC_DIR/) but does not update the spec. Update $SPEC_DIR/spec.md, or tick the 'spec is still accurate' box in the PR body."
+            exit 1
+          fi
+          echo "Spec reconciliation OK."

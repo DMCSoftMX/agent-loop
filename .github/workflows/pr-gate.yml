@@ -1,0 +1,25 @@
+name: PR Gate (reusable)
+
+# Binding "definition of done" gate. Fails while any required attestation in the PR body is
+# unchecked. Read-only (reads the PR body from the inherited event) → safe for forks.
+# Gates PRs into develop only. Called by the stub on `pull_request`.
+on:
+  workflow_call:
+
+jobs:
+  pr-gate:
+    name: pr-gate
+    if: github.event.pull_request.base.ref == 'develop'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Verify definition-of-done attestations
+        env:
+          BODY: ${{ github.event.pull_request.body }}
+        run: |
+          if printf '%s' "$BODY" | grep -qiE '^[[:space:]]*-[[:space:]]*\[[[:space:]]\][[:space:]].*\(required\)'; then
+            echo "::error::A required 'Definition of done' item is unchecked. Verify it and tick the box before merge:"
+            printf '%s\n' "$BODY" | grep -iE '^[[:space:]]*-[[:space:]]*\[[[:space:]]\][[:space:]].*\(required\)' || true
+            exit 1
+          fi
+          echo "All required definition-of-done items are checked."

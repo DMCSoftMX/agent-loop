@@ -1,25 +1,65 @@
 # .github/workflows/loop.yml  — copy this into EACH project repo (the only workflow it needs).
 #
-# THIN STUB: it just routes events to the central engine. All logic lives in DMCSoftMX/agent-loop;
+# THIN STUB: routes every event to the central engine. All logic lives in DMCSoftMX/agent-loop;
 # here you only pin the version (@vX). Renovate (stubs/renovate.json) bumps that pin for you.
-#
-# PROTOTYPE: only the `specify` route is shown. The rest are the same shape — one job each with
-# its guard + `uses`:
-#   plan            → if label == plan            → plan.yml
-#   claude-implement→ if label == claude-implement→ implement.yml
-#   @claude         → on: issue_comment           → claude.yml
-#   review/pr-gate/spec-guard → on: pull_request  → review.yml / pr-gate.yml / spec-guard.yml
-#   ci              → on: push                     → ci.yml
+# Per-repo data stays local: CLAUDE.md, setup.env, specs/.
 name: Agent loop
 
 on:
   issues:
-    types: [labeled]
+    types: [labeled, opened, assigned]
+  issue_comment:
+    types: [created]
+  pull_request_review:
+    types: [submitted]
+  pull_request_review_comment:
+    types: [created]
+  pull_request:
+    types: [opened, synchronize]
+  push:
+    branches: [develop, main]
 
 jobs:
   specify:
-    if: github.event.label.name == 'specify'
-    uses: DMCSoftMX/agent-loop/.github/workflows/specify.yml@v0.1.0
+    if: github.event_name == 'issues' && github.event.label.name == 'specify'
+    uses: DMCSoftMX/agent-loop/.github/workflows/specify.yml@v0.2.0
     secrets: inherit
-    # with:
-    #   model: claude-sonnet-4-6   # optional per-repo override
+
+  plan:
+    if: github.event_name == 'issues' && github.event.label.name == 'plan'
+    uses: DMCSoftMX/agent-loop/.github/workflows/plan.yml@v0.2.0
+    secrets: inherit
+
+  implement:
+    if: github.event_name == 'issues' && github.event.label.name == 'claude-implement'
+    uses: DMCSoftMX/agent-loop/.github/workflows/implement.yml@v0.2.0
+    secrets: inherit
+
+  claude:
+    if: |
+      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')) ||
+      (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude')) ||
+      (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@claude')) ||
+      (github.event_name == 'issues' && (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude')))
+    uses: DMCSoftMX/agent-loop/.github/workflows/claude.yml@v0.2.0
+    secrets: inherit
+
+  review:
+    if: github.event_name == 'pull_request'
+    uses: DMCSoftMX/agent-loop/.github/workflows/review.yml@v0.2.0
+    secrets: inherit
+
+  pr-gate:
+    if: github.event_name == 'pull_request'
+    uses: DMCSoftMX/agent-loop/.github/workflows/pr-gate.yml@v0.2.0
+    secrets: inherit
+
+  spec-guard:
+    if: github.event_name == 'pull_request'
+    uses: DMCSoftMX/agent-loop/.github/workflows/spec-guard.yml@v0.2.0
+    secrets: inherit
+
+  ci:
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
+    uses: DMCSoftMX/agent-loop/.github/workflows/ci.yml@v0.2.0
+    secrets: inherit

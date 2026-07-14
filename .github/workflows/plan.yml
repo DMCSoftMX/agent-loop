@@ -1,0 +1,61 @@
+name: Plan (reusable)
+
+# OPTIONAL deep-design escalation (SDD). Same shape as specify: workflow_call, templates fetched
+# at runtime. Reads the merged spec and writes plan.md + tasks.md into the caller's specs/.
+# The `plan` label guard lives in the project stub.
+on:
+  workflow_call:
+    inputs:
+      model:
+        description: Claude model for this phase.
+        type: string
+        default: claude-sonnet-4-6
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN:
+        required: true
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4          # caller repo (spec.md, CLAUDE.md)
+        with:
+          fetch-depth: 1
+      - uses: actions/checkout@v4          # this engine at the called version (templates)
+        with:
+          repository: DMCSoftMX/agent-loop
+          ref: ${{ github.job_workflow_sha }}
+          path: .agent-loop
+          fetch-depth: 1
+
+      - uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          track_progress: "true"
+          prompt: |
+            You are a DEEP PLAN agent (optional escalation for heavy work). Turn an approved spec
+            into a full technical design that supersedes its lightweight "Approach & tasks". Do
+            NOT write product code.
+
+            1. Find the spec dir for this issue: `specs/${{ github.event.issue.number }}-*/`.
+               Read its `spec.md` (source of truth) and CLAUDE.md. If no spec.md exists, stop and
+               comment that `specify` must run and be merged first.
+            2. Author `plan.md` and `tasks.md` in that SAME dir, copying the structure from
+               `.agent-loop/templates/`. The plan must be CONCRETE: real affected files,
+               contracts/interfaces/data shapes, risks+mitigations, and a test strategy mapping
+               each acceptance criterion to how it will be proven (flag what CI can't verify).
+               `tasks.md` is an ordered checklist of discrete, individually verifiable tasks.
+            3. Do NOT restate the spec; design against it. Do NOT change `spec.md`; if it is wrong
+               or ambiguous, note it in the PR body and leave the open question.
+            4. Create a branch `plan/${{ github.event.issue.number }}-<slug>`, commit ONLY files
+               under `specs/`, and open a PR against `develop` with body
+               `Refs #${{ github.event.issue.number }}`. Title:
+               `plan: <goal> (#${{ github.event.issue.number }})`.
+          claude_args: |
+            --model ${{ inputs.model }}

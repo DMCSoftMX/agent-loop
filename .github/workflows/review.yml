@@ -1,0 +1,50 @@
+name: Review (reusable)
+
+# Automatic PR review anchored to the spec. Read-only. Called by the stub on `pull_request`
+# (NOT pull_request_target → fork PRs never see the secret). Emits a machine-readable verdict.
+on:
+  workflow_call:
+    inputs:
+      model:
+        type: string
+        default: claude-sonnet-4-6
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN:
+        required: true
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          use_sticky_comment: "true"
+          prompt: |
+            Review this pull request. PRIMARY goal: verify it RESOLVES the issue it links
+            (`Fixes #N` / `Closes #N`). Find the spec for that issue at `specs/<N>-*/spec.md`; if
+            it exists, its acceptance criteria are the CONTRACT — check the PR against every one,
+            and anything left uncovered is BLOCKING. If a `plan.md`/`tasks.md` exists, flag
+            deviations from the plan and unchecked tasks. If there is no spec, fall back to the
+            issue body and its acceptance criteria. Then review conventions (per CLAUDE.md),
+            bugs, edge cases and error handling.
+
+            You run in CI without a browser: do NOT treat runtime-dependent behavior as verified;
+            ask for human verification. Be concise and distinguish BLOCKING from optional. If
+            everything is fine, say so.
+
+            END your review with exactly one machine-readable line, on its own:
+            `REVIEW-VERDICT: BLOCK` if there is any blocking issue, otherwise
+            `REVIEW-VERDICT: PASS`. Do not omit it or add text after it.
+          claude_args: |
+            --model ${{ inputs.model }}

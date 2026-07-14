@@ -1,0 +1,46 @@
+name: CI (reusable)
+
+# Objective verification. Reads the caller's setup.env at runtime for the stack + commands, sets
+# up the toolchain per STACK, and runs install/lint/typecheck/test/build (each skipped if empty).
+# Called by the stub on push and pull_request. NOTE: as a reusable workflow the required-check
+# context becomes `<stub-job> / validate` (e.g. `ci / validate`) — set branch protection to that.
+on:
+  workflow_call:
+
+jobs:
+  validate:
+    name: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Load stack config from setup.env
+        run: |
+          set -a; source setup.env 2>/dev/null || true; set +a
+          for v in STACK INSTALL_CMD LINT_CMD TYPECHECK_CMD TEST_CMD BUILD_CMD; do
+            printf '%s=%s\n' "$v" "${!v}" >> "$GITHUB_ENV"
+          done
+
+      - if: env.STACK == 'node'
+        uses: actions/setup-node@v4
+        with: { node-version: 20, cache: npm }
+      - if: env.STACK == 'python'
+        uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - if: env.STACK == 'go'
+        uses: actions/setup-go@v5
+        with: { go-version: '1.22' }
+      - if: env.STACK == 'rust'
+        uses: dtolnay/rust-toolchain@stable
+
+      - if: env.INSTALL_CMD != ''
+        run: ${{ env.INSTALL_CMD }}
+      - if: env.LINT_CMD != ''
+        run: ${{ env.LINT_CMD }}
+      - if: env.TYPECHECK_CMD != ''
+        run: ${{ env.TYPECHECK_CMD }}
+      - if: env.TEST_CMD != ''
+        run: ${{ env.TEST_CMD }}
+      - if: env.BUILD_CMD != ''
+        run: ${{ env.BUILD_CMD }}

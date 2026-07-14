@@ -1,0 +1,80 @@
+name: Implement (reusable)
+
+# The agent implements against the spec and opens a PR. Reads the caller's setup.env for the
+# stack + self-verify commands (installs deps, self-verifies before the PR). The
+# `claude-implement` label guard lives in the project stub.
+on:
+  workflow_call:
+    inputs:
+      model:
+        type: string
+        default: claude-sonnet-4-6
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN:
+        required: true
+
+jobs:
+  implement:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Load stack config from setup.env
+        run: |
+          set -a; source setup.env 2>/dev/null || true; set +a
+          for v in STACK INSTALL_CMD ALLOWED_VERIFY_TOOLS; do
+            printf '%s=%s\n' "$v" "${!v}" >> "$GITHUB_ENV"
+          done
+
+      - if: env.STACK == 'node'
+        uses: actions/setup-node@v4
+        with: { node-version: 20, cache: npm }
+      - if: env.STACK == 'python'
+        uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - if: env.STACK == 'go'
+        uses: actions/setup-go@v5
+        with: { go-version: '1.22' }
+      - if: env.STACK == 'rust'
+        uses: dtolnay/rust-toolchain@stable
+
+      - if: env.INSTALL_CMD != ''
+        run: ${{ env.INSTALL_CMD }}
+
+      - uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          track_progress: "true"
+          prompt: |
+            Implement the issue that triggered this event (it was labeled `claude-implement`) and
+            open a Pull Request.
+
+            1. Look for a spec for this issue at `specs/${{ github.event.issue.number }}-*/`. If
+               it exists, `spec.md` is your SOURCE OF TRUTH: its acceptance criteria are what your
+               PR must meet, and its "Approach & tasks" section is your guide. If a deeper
+               `plan.md` / `tasks.md` is also present, those SUPERSEDE the spec's light approach —
+               follow their contracts/affected files. If there is NO spec dir, fall back to the
+               issue body and its acceptance criteria.
+            2. Follow the project conventions described in CLAUDE.md.
+            3. Tick off the task checklist as you complete each item and commit the updated file
+               alongside your code: use `tasks.md` if it exists, otherwise the "Approach & tasks"
+               list inside `spec.md`.
+            4. Dependencies are ALREADY installed on the runner. BEFORE opening the PR, verify
+               your change by running the project's lint, typecheck and test commands; if anything
+               fails, fix it and retry until it passes. Do NOT run the build (slow; CI validates
+               it). If something is still red, open the PR anyway but state explicitly what is
+               failing and why.
+            5. Create a branch, commit, and open a PR against `develop` (the integration branch,
+               NOT main) whose body includes `Fixes #${{ github.event.issue.number }}` and
+               references the spec path if one exists.
+          claude_args: |
+            --model ${{ inputs.model }}
+            --allowedTools ${{ env.ALLOWED_VERIFY_TOOLS }}
