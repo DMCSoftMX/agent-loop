@@ -33,6 +33,15 @@ jobs:
           for v in STACK INSTALL_CMD ALLOWED_VERIFY_TOOLS; do
             printf '%s=%s\n' "$v" "${!v}" >> "$GITHUB_ENV"
           done
+          # @claude may be asked to edit code, so always include the editing tools.
+          # `--allowedTools` sets the exact allowlist (read-only base aside), so passing only
+          # the verify commands would drop Write/Edit and the agent couldn't change any file.
+          BASE="Edit,Write,MultiEdit"
+          if [ -n "$ALLOWED_VERIFY_TOOLS" ]; then
+            printf 'AGENT_TOOLS=%s,%s\n' "$BASE" "$ALLOWED_VERIFY_TOOLS" >> "$GITHUB_ENV"
+          else
+            printf 'AGENT_TOOLS=%s\n' "$BASE" >> "$GITHUB_ENV"
+          fi
 
       - if: env.STACK == 'node'
         uses: actions/setup-node@v4
@@ -54,5 +63,5 @@ jobs:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           claude_args: |
             --model ${{ inputs.model }}
-            --allowedTools ${{ env.ALLOWED_VERIFY_TOOLS }}
+            --allowedTools ${{ env.AGENT_TOOLS }}
             --append-system-prompt "If a spec exists for this work under specs/<issue#>-*/ , treat spec.md as the source of truth (meet its acceptance criteria) and follow plan.md/tasks.md when present, ticking off tasks as you go. Dependencies are already installed on the runner. Before opening the PR, verify your change by running the project's lint, typecheck and test commands; if anything fails, fix it and re-run until it passes. Do NOT run the build (slow; CI validates it). If after several attempts something is still red, open the PR anyway but state explicitly what is failing and why."

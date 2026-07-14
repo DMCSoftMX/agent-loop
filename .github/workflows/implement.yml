@@ -33,6 +33,15 @@ jobs:
           for v in STACK INSTALL_CMD ALLOWED_VERIFY_TOOLS; do
             printf '%s=%s\n' "$v" "${!v}" >> "$GITHUB_ENV"
           done
+          # The agent MUST be able to edit files, so always include the editing tools.
+          # `--allowedTools` sets the exact allowlist (read-only base aside), so passing only
+          # the verify commands would drop Write/Edit and the agent couldn't implement anything.
+          BASE="Edit,Write,MultiEdit"
+          if [ -n "$ALLOWED_VERIFY_TOOLS" ]; then
+            printf 'AGENT_TOOLS=%s,%s\n' "$BASE" "$ALLOWED_VERIFY_TOOLS" >> "$GITHUB_ENV"
+          else
+            printf 'AGENT_TOOLS=%s\n' "$BASE" >> "$GITHUB_ENV"
+          fi
 
       - if: env.STACK == 'node'
         uses: actions/setup-node@v4
@@ -77,4 +86,4 @@ jobs:
                references the spec path if one exists.
           claude_args: |
             --model ${{ inputs.model }}
-            --allowedTools ${{ env.ALLOWED_VERIFY_TOOLS }}
+            --allowedTools ${{ env.AGENT_TOOLS }}
