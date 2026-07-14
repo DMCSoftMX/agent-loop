@@ -4,8 +4,8 @@ The **versioned engine** for the spec-driven agent loop. Its logic, templates an
 maintained **once, here**. Each project repo carries only a thin stub that *calls* this engine —
 no copied workflows. Change something here + tag → Renovate opens a bump PR in every project.
 
-> **Status: all 8 phases wired** as reusable workflows. A project consumes them by copying one
-> thin stub ([`stubs/loop.yml`](stubs/loop.yml)).
+> **Status: all 8 phases wired** as reusable workflows, plus a `preflight` setup validator. A
+> project consumes them by copying one thin stub ([`stubs/loop.yml`](stubs/loop.yml)).
 
 ## Structure
 
@@ -19,7 +19,8 @@ agent-loop/                              ← DMCSoftMX/agent-loop (semver-tagged
 │   ├── review.yml        PR review vs the spec · emits REVIEW-VERDICT
 │   ├── pr-gate.yml       binding definition-of-done gate
 │   ├── spec-guard.yml    anti-drift: code change must reconcile its spec
-│   └── ci.yml            stack-aware validate (reads setup.env)
+│   ├── ci.yml            stack-aware validate (reads setup.env)
+│   └── preflight.yml     one-shot setup check (workflow_dispatch): secret · token · App · config
 │   (spec/plan/tasks templates are INLINED in the specify/plan prompts — no separate files,
 │    no engine checkout, so this repo can stay private with zero per-repo tokens.)
 └── stubs/                what each PROJECT repo copies (once)
@@ -36,13 +37,21 @@ every event (labels, `@claude`, PRs, push) to the reusable workflows here, pinne
 jobs:
   specify:
     if: github.event_name == 'issues' && github.event.label.name == 'specify'
-    uses: DMCSoftMX/agent-loop/.github/workflows/specify.yml@v0.2.0
+    uses: DMCSoftMX/agent-loop/.github/workflows/specify.yml@v0.4.0
     secrets: inherit
-  # … plan · implement · claude · review · pr-gate · spec-guard · ci (same shape)
+  # … plan · implement · claude · review · pr-gate · spec-guard · ci · preflight (same shape)
 ```
 
 That's the whole footprint. Plus the per-repo data that rightly stays local: `CLAUDE.md`,
 `setup.env`, `specs/`.
+
+**After wiring the stub, run preflight once** (Actions → *Agent loop* → *Run workflow*). It pings
+the App-token exchange and checks the secret, `setup.env`, labels and default branch, then fails
+with a clear checklist — so a misconfigured repo surfaces the problem here instead of in the first
+real `specify`. It only fires on `workflow_dispatch`; normal events skip it. (One caveat it *can't*
+catch from the inside: if the stub lacks its `permissions:` block or engine access isn't
+`organization`, preflight itself won't start — a `startup_failure` on preflight **is** that
+diagnosis.)
 
 ## Runtime model (the key tricks)
 

@@ -1,0 +1,135 @@
+name: Preflight (reusable)
+
+# One-shot setup validator. Run it ONCE per repo after wiring the stub:
+# Actions tab -> "Agent loop" -> Run workflow. It fails LOUD and EARLY with
+# remediation, instead of letting the first real `specify` die opaque.
+#
+# NOTE: if THIS workflow shows `startup_failure` (never runs a single step),
+# that IS the diagnosis for the two blockers preflight cannot see from the
+# inside -- the stub is missing its top-level `permissions:` block, or engine
+# access isn't `organization` (see SETUP.md). GitHub evaluates permissions and
+# reusable-workflow access BEFORE any step runs, so there is no way to report
+# them from here. If preflight runs at all, those two are already correct.
+on:
+  workflow_call:
+    inputs:
+      model:
+        description: Claude model for the ping (per-repo override, optional).
+        type: string
+        default: sonnet
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN:
+        required: true
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:            # same ceiling as the real phases -> running proves the stub grant
+      contents: write
+      pull-requests: write
+      issues: write
+      id-token: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      # ---- secret present (cleaner message than a downstream 401) ----------
+      - name: Secret CLAUDE_CODE_OAUTH_TOKEN is set
+        id: secret
+        env:
+          TOK: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: |
+          if [ -z "$TOK" ]; then
+            echo "::error::CLAUDE_CODE_OAUTH_TOKEN is empty. Set it: claude setup-token | gh secret set CLAUDE_CODE_OAUTH_TOKEN"
+            echo "has=false" >> "$GITHUB_OUTPUT"
+            echo "FAIL secret" >> "$RUNNER_TEMP/results"
+          else
+            echo "has=true" >> "$GITHUB_OUTPUT"
+            echo "PASS secret" >> "$RUNNER_TEMP/results"
+          fi
+
+      # ---- config: setup.env exists + required keys ------------------------
+      - name: setup.env present and complete
+        run: |
+          if [ ! -f setup.env ]; then
+            echo "::error::setup.env missing. Copy setup.env.example and fill it."
+            echo "FAIL setupenv" >> "$RUNNER_TEMP/results"; exit 0
+          fi
+          . ./setup.env
+          miss=""
+          for k in STACK ALLOWED_VERIFY_TOOLS; do
+            [ -z "${!k}" ] && miss="$miss $k"
+          done
+          if [ -n "$miss" ]; then
+            echo "::error::setup.env is missing keys:$miss"
+            echo "FAIL setupenv" >> "$RUNNER_TEMP/results"
+          else
+            echo "PASS setupenv" >> "$RUNNER_TEMP/results"
+          fi
+
+      # ---- convention: labels exist (GitHub silently drops unknown ones) ---
+      - name: Required labels exist
+        run: |
+          have=$(gh label list --limit 100 --json name -q '.[].name')
+          for l in specify plan claude-implement task bug rework; do
+            echo "$have" | grep -qx "$l" || echo "::warning::label '$l' missing (create it; GitHub silently drops unknown labels)"
+          done
+
+      # ---- convention: default branch is develop ---------------------------
+      - name: Default branch is develop
+        run: |
+          def=$(gh api "repos/${{ github.repository }}" -q .default_branch)
+          [ "$def" = "develop" ] || echo "::warning::default branch is '$def', expected 'develop' (issue triggers read from the default branch)"
+
+      # ---- the real ping: App installed AND token valid --------------------
+      # Reproduces the OIDC -> app-token exchange with a trivial prompt so the
+      # two 401s that used to be buried in `is_error:true` surface as clear
+      # annotations. `continue-on-error` lets us parse the output ourselves.
+      - name: Claude ping (App install + token)
+        id: ping
+        if: steps.secret.outputs.has != 'false'
+        continue-on-error: true
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: "Reply with exactly the single word: PONG. Do nothing else."
+          claude_args: "--model ${{ inputs.model }}"
+
+      - name: Interpret ping
+        if: steps.secret.outputs.has != 'false'
+        run: |
+          f=/home/runner/work/_temp/claude-execution-output.json
+          out=$(cat "$f" 2>/dev/null || echo '')
+          if echo "$out" | grep -q "not installed on this repository"; then
+            echo "::error::Claude GitHub App is NOT installed on the org. Install https://github.com/apps/claude on your org -> All repositories."
+            echo "FAIL app" >> "$RUNNER_TEMP/results"
+          elif echo "$out" | grep -q "Invalid bearer token"; then
+            echo "::error::Token rejected (Invalid bearer token). Regenerate with 'claude setup-token' (no stray whitespace) and re-set the secret."
+            echo "FAIL token" >> "$RUNNER_TEMP/results"
+          elif echo "$out" | grep -qi "pong"; then
+            echo "PASS ping" >> "$RUNNER_TEMP/results"
+          else
+            echo "::error::Ping inconclusive -- dumping execution output:"
+            echo "$out"
+            echo "FAIL ping" >> "$RUNNER_TEMP/results"
+          fi
+
+      # ---- gate: aggregate + write the Actions run summary -----------------
+      - name: Verdict
+        if: always()
+        run: |
+          r="$RUNNER_TEMP/results"
+          touch "$r"
+          {
+            echo "## Preflight"
+            sed 's/^PASS/- ✅/; s/^FAIL/- ❌/' "$r"
+          } >> "$GITHUB_STEP_SUMMARY"
+          if grep -q '^FAIL' "$r"; then
+            echo "::error::Preflight failed -- fix the ❌ items above, then re-run."
+            exit 1
+          fi
+          echo "Preflight green -- the loop is ready."

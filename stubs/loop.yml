@@ -6,6 +6,7 @@
 name: Agent loop
 
 on:
+  workflow_dispatch:        # run the one-shot `preflight` job to validate setup
   issues:
     types: [labeled, opened, assigned]
   issue_comment:
@@ -30,19 +31,27 @@ permissions:
   id-token: write
 
 jobs:
+  # Run ONCE per repo after setup (Actions -> "Agent loop" -> Run workflow) to
+  # validate secret/token/App/config before the first real phase. Never fires
+  # on normal events.
+  preflight:
+    if: github.event_name == 'workflow_dispatch'
+    uses: DMCSoftMX/agent-loop/.github/workflows/preflight.yml@v0.4.0
+    secrets: inherit
+
   specify:
     if: github.event_name == 'issues' && github.event.label.name == 'specify'
-    uses: DMCSoftMX/agent-loop/.github/workflows/specify.yml@v0.2.0
+    uses: DMCSoftMX/agent-loop/.github/workflows/specify.yml@v0.4.0
     secrets: inherit
 
   plan:
     if: github.event_name == 'issues' && github.event.label.name == 'plan'
-    uses: DMCSoftMX/agent-loop/.github/workflows/plan.yml@v0.2.0
+    uses: DMCSoftMX/agent-loop/.github/workflows/plan.yml@v0.4.0
     secrets: inherit
 
   implement:
     if: github.event_name == 'issues' && github.event.label.name == 'claude-implement'
-    uses: DMCSoftMX/agent-loop/.github/workflows/implement.yml@v0.2.0
+    uses: DMCSoftMX/agent-loop/.github/workflows/implement.yml@v0.4.0
     secrets: inherit
 
   claude:
@@ -51,25 +60,25 @@ jobs:
       (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude')) ||
       (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@claude')) ||
       (github.event_name == 'issues' && (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude')))
-    uses: DMCSoftMX/agent-loop/.github/workflows/claude.yml@v0.2.0
+    uses: DMCSoftMX/agent-loop/.github/workflows/claude.yml@v0.4.0
     secrets: inherit
 
   review:
     if: github.event_name == 'pull_request'
-    uses: DMCSoftMX/agent-loop/.github/workflows/review.yml@v0.2.0
+    uses: DMCSoftMX/agent-loop/.github/workflows/review.yml@v0.4.0
     secrets: inherit
 
   pr-gate:
     if: github.event_name == 'pull_request'
-    uses: DMCSoftMX/agent-loop/.github/workflows/pr-gate.yml@v0.2.0
+    uses: DMCSoftMX/agent-loop/.github/workflows/pr-gate.yml@v0.4.0
     secrets: inherit
 
   spec-guard:
     if: github.event_name == 'pull_request'
-    uses: DMCSoftMX/agent-loop/.github/workflows/spec-guard.yml@v0.2.0
+    uses: DMCSoftMX/agent-loop/.github/workflows/spec-guard.yml@v0.4.0
     secrets: inherit
 
   ci:
     if: github.event_name == 'push' || github.event_name == 'pull_request'
-    uses: DMCSoftMX/agent-loop/.github/workflows/ci.yml@v0.2.0
+    uses: DMCSoftMX/agent-loop/.github/workflows/ci.yml@v0.4.0
     secrets: inherit
