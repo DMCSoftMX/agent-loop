@@ -8,7 +8,7 @@ on:
     inputs:
       model:
         type: string
-        default: claude-sonnet-4-6
+        default: sonnet
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN:
         required: true
