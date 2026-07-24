@@ -92,6 +92,16 @@ jobs:
           token: ${{ steps.token.outputs.token }}
           fetch-depth: 0
 
+      # claude-code-action sets a commit identity in the MAIN checkout, but not in this second
+      # one, so the agent's `git commit` inside .specs-repo dies with "empty ident name" — and the
+      # agent is (correctly) forbidden from running `git config` itself. Set it here, as the App's
+      # bot, so the spec commit is attributed to the loop identity.
+      - name: Give the specs checkout a commit identity
+        working-directory: .specs-repo
+        run: |
+          git config user.name  "dmcsoftmx-agent-loop[bot]"
+          git config user.email "308612457+dmcsoftmx-agent-loop[bot]@users.noreply.github.com"
+
       - uses: anthropics/claude-code-action@v1
         env:
           # `gh` inside the agent must be able to open a PR in the OTHER repo.

@@ -73,6 +73,14 @@ jobs:
           token: ${{ steps.token.outputs.token }}
           fetch-depth: 0
 
+      # See specify.yml: the second checkout has no commit identity, and the agent can't set one,
+      # so its commit into .specs-repo would fail with "empty ident name".
+      - name: Give the specs checkout a commit identity
+        working-directory: .specs-repo
+        run: |
+          git config user.name  "dmcsoftmx-agent-loop[bot]"
+          git config user.email "308612457+dmcsoftmx-agent-loop[bot]@users.noreply.github.com"
+
       - uses: anthropics/claude-code-action@v1
         env:
           GH_TOKEN: ${{ steps.token.outputs.token }}
