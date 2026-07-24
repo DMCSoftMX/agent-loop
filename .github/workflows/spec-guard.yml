@@ -1,9 +1,38 @@
 name: Spec Guard (reusable)
 
-# Anti-drift. A code change resolving a spec'd issue must reconcile the spec (or attest it's
-# still accurate). Read-only (checkout + git diff) → safe for forks. Gates PRs into develop.
+# Anti-drift gate on PRs into develop.
+#
+# SINCE v0.5.0 (ADR-0001) THIS CHECK CHANGED MEANING. The spec no longer lives in the code repo,
+# so the guard can no longer see "the spec was edited in this PR" from the diff. What it checks
+# now is the PIN:
+#
+#   1. If the issue has an approved spec, the PR must carry `.specs/<issue#>.ref` pinning it.
+#   2. The pinned sha must still be the head of that spec's path in the specs repo.
+#
+# Rule 2 is what recovers reconciliation: if a human decides the spec was wrong and merges a spec
+# PR, the spec head moves, every open code PR pinned to the old sha goes red, and someone has to
+# look at the code again before merging. That is the same forcing function as before, just driven
+# by the specs repo instead of by the diff.
+#
+# Known reduction in coverage, stated plainly: the old check also nagged when code changed and the
+# spec file was untouched. That proxy is gone — there is no spec file here to be untouched. The
+# `spec is still accurate` checkbox in the PR template is what covers that case now.
+#
+# Two operational costs of reading a private specs repo: this job is no longer secret-free, so it
+# no longer works on FORK PRs (`pull_request` withholds secrets from forks), and it needs the same
+# App credentials as the other phases.
 on:
   workflow_call:
+    inputs:
+      specs_repo:
+        description: The specs repo (system of record) to reconcile against.
+        type: string
+        default: DMCSoftMX/specs
+    secrets:
+      LOOP_APP_ID:
+        required: false
+      LOOP_APP_PRIVATE_KEY:
+        required: false
 
 jobs:
   spec-guard:
@@ -12,32 +41,94 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      - name: Require the cross-repo App credentials
+        env:
+          APP_ID: ${{ secrets.LOOP_APP_ID }}
+          APP_KEY: ${{ secrets.LOOP_APP_PRIVATE_KEY }}
+        run: |
+          if [ -z "$APP_ID" ] || [ -z "$APP_KEY" ]; then
+            echo "::error::spec-guard cannot read ${{ inputs.specs_repo }}: LOOP_APP_ID / LOOP_APP_PRIVATE_KEY are not set (fork PRs never get them). See SETUP.md."
+            exit 1
+          fi
+
+      - name: Resolve the specs repo name
+        id: specs
+        env:
+          SPECS_REPO: ${{ inputs.specs_repo }}
+        run: printf 'name=%s\n' "${SPECS_REPO#*/}" >> "$GITHUB_OUTPUT"
+
+      - name: Mint cross-repo token
+        id: token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.LOOP_APP_ID }}
+          private-key: ${{ secrets.LOOP_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ steps.specs.outputs.name }}
+
       - uses: actions/checkout@v4
         with:
+          fetch-depth: 1
+
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.specs_repo }}
+          path: .specs-repo
+          token: ${{ steps.token.outputs.token }}
           fetch-depth: 0
-      - name: Check the spec is reconciled with the code
+
+      - name: Check the PR pins the current spec
         env:
           BODY: ${{ github.event.pull_request.body }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          REPO_NAME: ${{ github.event.repository.name }}
+          SPECS_REPO: ${{ inputs.specs_repo }}
         run: |
-          FILES=$(git diff --name-only "$BASE_SHA" "$HEAD_SHA")
+          set -euo pipefail
 
           N=$(printf '%s' "$BODY" | grep -oiE '(fix(es|ed)?|close[sd]?|resolve[sd]?)[[:space:]]+#[0-9]+' | grep -oE '[0-9]+' | head -n1 || true)
           if [ -z "$N" ]; then echo "No linked issue — nothing to guard."; exit 0; fi
 
-          SPEC_DIR=$(ls -d "specs/${N}-"* 2>/dev/null | head -n1 || true)
-          if [ -z "$SPEC_DIR" ]; then echo "No spec for issue #$N — nothing to guard."; exit 0; fi
+          SPEC_DIR=$(ls -d ".specs-repo/specs/${REPO_NAME}/${N}-"* 2>/dev/null | head -n1 || true)
+          REF=".specs/${N}.ref"
 
-          if printf '%s\n' "$FILES" | grep -vE '^(specs/|\.github/)' | grep -q .; then CODE_CHANGED=yes; else CODE_CHANGED=no; fi
-          if printf '%s\n' "$FILES" | grep -qE "^${SPEC_DIR}/"; then SPEC_CHANGED=yes; else SPEC_CHANGED=no; fi
-
-          if [ "$CODE_CHANGED" = yes ] && [ "$SPEC_CHANGED" = no ]; then
-            if printf '%s' "$BODY" | grep -qiE '^[[:space:]]*-[[:space:]]*\[x\][[:space:]].*spec.*(accurate|unchanged|up[- ]?to[- ]?date)'; then
-              echo "Code changed without a spec update, but the PR attests the spec is still accurate. OK."
-              exit 0
+          if [ ! -f "$REF" ]; then
+            if [ -n "$SPEC_DIR" ]; then
+              echo "::error::Issue #${N} has an approved spec (${SPEC_DIR#.specs-repo/}) but this PR does not pin it. Expected the file ${REF} — re-run \`claude-implement\`, or add it by hand."
+              exit 1
             fi
-            echo "::error::This PR changes code for issue #$N (spec: $SPEC_DIR/) but does not update the spec. Update $SPEC_DIR/spec.md, or tick the 'spec is still accurate' box in the PR body."
+            echo "No spec for issue #${N} and no pin — nothing to guard."
+            exit 0
+          fi
+
+          # Parse, never source: this file comes from the PR branch and sourcing it would execute
+          # whatever an author put in it, in a job that holds an installation token.
+          val () { grep -m1 "^$1=" "$REF" | cut -d= -f2- || true; }
+          PIN_REPO=$(val repo); PIN_PATH=$(val path); PIN_SHA=$(val sha)
+
+          if [ "$PIN_REPO" != "$SPECS_REPO" ]; then
+            echo "::error::${REF} pins '${PIN_REPO}', but this repo reconciles against '${SPECS_REPO}'."
             exit 1
           fi
-          echo "Spec reconciliation OK."
+          if ! printf '%s' "$PIN_SHA" | grep -qE '^[0-9a-f]{40}$'; then
+            echo "::error::${REF} has a malformed sha: '${PIN_SHA}'."
+            exit 1
+          fi
+
+          HEAD_SHA=$(git -C .specs-repo log -1 --format=%H -- "$PIN_PATH")
+          if [ -z "$HEAD_SHA" ]; then
+            echo "::error::${REF} points at '${PIN_PATH}', which does not exist in ${SPECS_REPO}."
+            exit 1
+          fi
+
+          if [ "$PIN_SHA" = "$HEAD_SHA" ]; then
+            echo "Pin is current (${PIN_PATH} @ ${PIN_SHA})."
+            exit 0
+          fi
+
+          if printf '%s' "$BODY" | grep -qiE '^[[:space:]]*-[[:space:]]*\[x\][[:space:]].*spec.*(accurate|unchanged|up[- ]?to[- ]?date)'; then
+            echo "::warning::The spec moved (${PIN_SHA} -> ${HEAD_SHA}) but the PR attests the code is still accurate. Allowing."
+            exit 0
+          fi
+
+          echo "::error::The spec moved after this PR was written. ${PIN_PATH} is now at ${HEAD_SHA}, this PR pins ${PIN_SHA}. Review the change (https://github.com/${SPECS_REPO}/compare/${PIN_SHA}...${HEAD_SHA}), then update ${REF} — or tick the 'spec is still accurate' box in the PR body."
+          exit 1

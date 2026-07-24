@@ -1,9 +1,9 @@
 name: Plan (reusable)
 
-# OPTIONAL deep-design escalation (SDD). Same shape as specify. Reads the merged spec and writes
-# plan.md + tasks.md into the caller's specs/. The `plan` label guard lives in the project stub.
-# Both templates are INLINED in the prompt below — no checkout of this (private) engine repo, and
-# they are versioned with this file (whatever `@vX` the stub pins).
+# OPTIONAL deep-design escalation (SDD). Same shape as specify: reads the merged spec and writes
+# plan.md + tasks.md NEXT TO IT in the specs repo (ADR-0001) — they are documents, so they live
+# where the documents live. The `plan` label guard lives in the project stub. Templates come from
+# the specs repo (templates/plan.md, templates/tasks.md), not inlined here.
 on:
   workflow_call:
     inputs:
@@ -11,98 +11,110 @@ on:
         description: Claude model for this phase.
         type: string
         default: sonnet
+      specs_repo:
+        description: The specs repo (system of record) that receives the plan PR.
+        type: string
+        default: DMCSoftMX/specs
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN:
         required: true
+      # See specify.yml: optional so the failure is a readable annotation, not a
+      # step-less `startup_failure`.
+      LOOP_APP_ID:
+        required: false
+      LOOP_APP_PRIVATE_KEY:
+        required: false
 
 jobs:
   plan:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
-      contents: write
+      contents: read
       pull-requests: write
       issues: write
       id-token: write
     steps:
-      - uses: actions/checkout@v4          # caller repo (spec.md, CLAUDE.md)
+      - name: Require the cross-repo App credentials
+        env:
+          APP_ID: ${{ secrets.LOOP_APP_ID }}
+          APP_KEY: ${{ secrets.LOOP_APP_PRIVATE_KEY }}
+        run: |
+          if [ -z "$APP_ID" ] || [ -z "$APP_KEY" ]; then
+            echo "::error::Since v0.5.0 the plan is written to ${{ inputs.specs_repo }}, which the default GITHUB_TOKEN cannot reach. Set LOOP_APP_ID and LOOP_APP_PRIVATE_KEY on this repo (SETUP.md, 'GitHub App')."
+            exit 1
+          fi
+
+      - name: Resolve the specs repo name
+        id: specs
+        env:
+          SPECS_REPO: ${{ inputs.specs_repo }}
+        run: printf 'name=%s\n' "${SPECS_REPO#*/}" >> "$GITHUB_OUTPUT"
+
+      - name: Mint cross-repo token
+        id: token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.LOOP_APP_ID }}
+          private-key: ${{ secrets.LOOP_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: |
+            ${{ github.event.repository.name }}
+            ${{ steps.specs.outputs.name }}
+
+      - uses: actions/checkout@v4          # caller repo (CLAUDE.md, the code being designed for)
         with:
           fetch-depth: 1
 
+      - uses: actions/checkout@v4          # specs repo (spec.md in, plan.md + tasks.md out)
+        with:
+          repository: ${{ inputs.specs_repo }}
+          path: .specs-repo
+          token: ${{ steps.token.outputs.token }}
+          fetch-depth: 0
+
       - uses: anthropics/claude-code-action@v1
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ steps.token.outputs.token }}
           track_progress: "true"
           prompt: |
             You are a DEEP PLAN agent (optional escalation for heavy work). Turn an approved spec
             into a full technical design that supersedes its lightweight "Approach & tasks". Do
             NOT write product code.
 
-            1. Find the spec dir for this issue: `specs/${{ github.event.issue.number }}-*/`.
-               Read its `spec.md` (source of truth) and CLAUDE.md. If no spec.md exists, stop and
-               comment that `specify` must run and be merged first.
-            2. Author `plan.md` and `tasks.md` in that SAME dir, using EXACTLY the templates below.
-               Keep every heading; replace every `<<...>>` (set Refs to #${{ github.event.issue.number }}).
+            The specs repo is checked out at `.specs-repo/` (remote: ${{ inputs.specs_repo }},
+            branch main). This repo's own code is checked out at the root — read it for context,
+            but do NOT modify or commit anything in it.
+
+            1. Find the spec dir for this issue:
+               `.specs-repo/specs/${{ github.event.repository.name }}/${{ github.event.issue.number }}-*/`
+               Read its `spec.md` (source of truth) and CLAUDE.md (root of this repo). If no
+               `spec.md` exists, STOP and comment on the issue that `specify` must run and its PR
+               must be merged first.
+            2. Read `.specs-repo/templates/plan.md` and `.specs-repo/templates/tasks.md`. Author
+               `plan.md` and `tasks.md` in that SAME spec dir using those templates exactly: keep
+               every heading, replace every `<<...>>`. Set Refs to
+               `${{ github.repository }}#${{ github.event.issue.number }}`.
                The plan must be CONCRETE: real affected files, contracts/interfaces/data shapes,
                risks+mitigations, and a test strategy mapping each acceptance criterion to how it
                will be proven (flag what CI can't verify). `tasks.md` is an ordered checklist of
                discrete, individually verifiable tasks.
-
-               ===== BEGIN plan.md TEMPLATE =====
-               # Plan: <<title>>
-
-               > **Refs:** #<<issue>>  ·  derived from [`spec.md`](spec.md)  ·  **only for `plan`-escalated work**
-               > The deep HOW — supersedes the spec's lightweight "Approach & tasks". Design
-               > decisions, not restated requirements. Skip this file entirely for normal work.
-
-               ## Approach
-
-               <<The chosen technical approach in a few sentences, and briefly why over the alternatives.>>
-
-               ## Affected areas / files
-
-               | File / module | Change |
-               |---|---|
-               | <<path>> | <<what changes and why>> |
-
-               ## Contracts / interfaces
-
-               <<New or changed APIs, function signatures, schemas, events, data shapes. Be concrete
-               — the implementer should not have to invent these.>>
-
-               ## Data / state
-
-               <<Migrations, new state, persistence changes. Omit if none.>>
-
-               ## Risks & mitigations
-
-               - <<risk>> → <<mitigation>>
-
-               ## Test strategy
-
-               <<What proves each acceptance criterion: unit / integration / manual runtime check.
-               Flag anything CI cannot verify (needs human verification).>>
-               ===== END plan.md TEMPLATE =====
-
-               ===== BEGIN tasks.md TEMPLATE =====
-               # Tasks: <<title>>
-
-               > **Refs:** #<<issue>>  ·  derived from [`plan.md`](plan.md)  ·  **only for `plan`-escalated work**
-               > Discrete, ordered, checkable. The implementer ticks these off as it goes and
-               > commits the updated file alongside the code.
-
-               - [ ] <<task 1 — small enough to verify on its own>>
-               - [ ] <<task 2>>
-               - [ ] <<task 3>>
-               - [ ] Update/adds tests covering the acceptance criteria
-               - [ ] Self-verify: lint · typecheck · test pass locally
-               ===== END tasks.md TEMPLATE =====
-
             3. Do NOT restate the spec; design against it. Do NOT change `spec.md`; if it is wrong
-               or ambiguous, note it in the PR body and leave the open question.
-            4. Create a branch `plan/${{ github.event.issue.number }}-<slug>`, commit ONLY files
-               under `specs/`, and open a PR against `develop` with body
-               `Refs #${{ github.event.issue.number }}`. Title:
-               `plan: <goal> (#${{ github.event.issue.number }})`.
+               or ambiguous, note it in the PR body and leave the open question. Changing spec.md
+               here would move its sha and turn every open code PR red.
+            4. Publish it, working INSIDE `.specs-repo/`:
+               - `git checkout -b plan/${{ github.event.repository.name }}-${{ github.event.issue.number }}-<slug>`
+               - commit ONLY the two new files
+               - `git push -u origin HEAD`
+               - `gh pr create --repo ${{ inputs.specs_repo }} --base main
+                  --title "plan: <goal> (${{ github.event.repository.name }}#${{ github.event.issue.number }})"
+                  --body "Refs ${{ github.repository }}#${{ github.event.issue.number }}"`
+                 `Refs`, never `Fixes` — merging must not close the issue that drives `implement`.
+            5. Comment on the originating issue
+               (`gh issue comment ${{ github.event.issue.number }} --repo ${{ github.repository }}`)
+               with the plan PR URL.
           claude_args: |
             --model ${{ inputs.model }}

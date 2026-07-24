@@ -37,13 +37,18 @@ every event (labels, `@claude`, PRs, push) to the reusable workflows here, pinne
 jobs:
   specify:
     if: github.event_name == 'issues' && github.event.label.name == 'specify'
-    uses: DMCSoftMX/agent-loop/.github/workflows/specify.yml@v0.4.0
+    uses: DMCSoftMX/agent-loop/.github/workflows/specify.yml@v0.5.0
     secrets: inherit
   # … plan · implement · claude · review · pr-gate · spec-guard · ci · preflight (same shape)
 ```
 
 That's the whole footprint. Plus the per-repo data that rightly stays local: `CLAUDE.md`,
-`setup.env`, `specs/`.
+`setup.env`, and the `.specs/<issue#>.ref` pins.
+
+**Since v0.5.0 the specs themselves are NOT local.** They live in
+[`DMCSoftMX/specs`](https://github.com/DMCSoftMX/specs) (ADR-0001) — a code repo versions code,
+not documents. Each repo keeps only a pointer per issue. See *Cross-repo auth* below: this is the
+one thing v0.5.0 asks of you that v0.4.x didn't.
 
 **After wiring the stub, run preflight once** (Actions → *Agent loop* → *Run workflow*). It pings
 the App-token exchange and checks the secret, `setup.env`, labels and default branch, then fails
@@ -55,11 +60,19 @@ diagnosis.)
 
 ## Runtime model (the key tricks)
 
-- **One checkout, no engine token:** the reusable checks out only the **caller repo** (for
-  `CLAUDE.md`, `setup.env`, `specs/`). The spec/plan/tasks **templates are inlined in the phase
-  prompts**, so the runner never checks out this engine repo — which means `agent-loop` stays
-  **private** with no per-repo PAT, and the template is automatically the one from the pinned
-  `@vX` (it travels with the workflow file).
+- **No engine token, ever:** the runner never checks out this engine repo, so `agent-loop` stays
+  **private** with no per-repo PAT. The phases check out the caller (for `CLAUDE.md`, `setup.env`)
+  and, since v0.5.0, the specs repo at `.specs-repo/` — never this one.
+- **Cross-repo auth (v0.5.0, new requirement):** the caller's default `GITHUB_TOKEN` is scoped to
+  the caller, so it cannot read or write the specs repo. Each phase mints a short-lived App
+  installation token covering *both* repos from `LOOP_APP_ID` + `LOOP_APP_PRIVATE_KEY`. Those must
+  be set **per repo** (org secrets aren't available to private repos on this plan). `specify`,
+  `plan`, `implement` and `spec-guard` fail loudly without them; `review` and `claude` degrade to
+  running without spec context. `preflight` verifies the whole chain — including that the minted
+  token can actually *write* to the specs repo — before you run a real phase.
+- **Templates moved out:** spec/plan/tasks templates now live in the specs repo under
+  `templates/`, so editing one is a PR there instead of an engine tag. The tradeoff: they are no
+  longer pinned to `@vX`.
 - **The stub grants the token ceiling:** a called reusable can't exceed the caller's permissions,
   so `stubs/loop.yml` sets top-level `permissions:` (contents/PR/issues/id-token write). Without
   it every write phase dies at **startup** on a read-only default token.
@@ -86,12 +99,12 @@ protection on `develop` to require:
 
 ## What stays central vs per-repo
 
-| Central (here, versioned) | Per-repo (in each project) |
-|---|---|
-| Reusable workflows (logic) | Thin stub (`loop.yml`) |
-| Prompts + inlined spec/plan/tasks templates | `CLAUDE.md`, `setup.env` |
-| Gate logic (pr-gate, spec-guard) | `specs/` (generated data) |
-| — | Labels + branch protection (settings) |
+| Central — engine (here) | Central — specs repo | Per-repo (each project) |
+|---|---|---|
+| Reusable workflows (logic) | The specs themselves | Thin stub (`loop.yml`) |
+| Phase prompts | spec/plan/tasks templates | `CLAUDE.md`, `setup.env` |
+| Gate logic (pr-gate, spec-guard) | Spec PRs (the intent gate) | `.specs/<issue#>.ref` pins |
+| — | — | Labels, branch protection, secrets |
 
 PR/issue templates can't be "reused" (GitHub reads them from the repo) — publish them as
 **org defaults** in `DMCSoftMX/.github`, or sync with Cruft/multi-gitter.
