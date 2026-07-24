@@ -92,20 +92,17 @@ jobs:
           token: ${{ steps.token.outputs.token }}
           fetch-depth: 0
 
-      # claude-code-action sets a commit identity in the MAIN checkout, but not in this second
-      # one, so the agent's `git commit` inside .specs-repo dies with "empty ident name" — and the
-      # agent is (correctly) forbidden from running `git config` itself. Set it here, as the App's
-      # bot, so the spec commit is attributed to the loop identity.
-      - name: Give the specs checkout a commit identity
-        working-directory: .specs-repo
-        run: |
-          git config user.name  "dmcsoftmx-agent-loop[bot]"
-          git config user.email "308612457+dmcsoftmx-agent-loop[bot]@users.noreply.github.com"
+      # Keep the specs checkout from being swept into the caller's working tree (it is a nested
+      # git repo; a stray `git add -A` would otherwise pull it in as a gitlink). Local-only.
+      - name: Keep the specs checkout out of the code repo
+        run: printf '/.specs-repo/\n' >> .git/info/exclude
 
+      # The agent AUTHORS the spec file and nothing else. It does NOT run git or gh: claude-code-
+      # action runs the agent in a git sandbox scoped to its own (main) checkout, where branch
+      # creation and gh are gated behind approval that an unattended run doesn't have — so cross-
+      # repo branch+PR from inside the agent is structurally impossible. The deterministic shell
+      # steps below do the publishing (same split as implement.yml's pin file).
       - uses: anthropics/claude-code-action@v1
-        env:
-          # `gh` inside the agent must be able to open a PR in the OTHER repo.
-          GH_TOKEN: ${{ steps.token.outputs.token }}
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ steps.token.outputs.token }}
@@ -118,33 +115,73 @@ jobs:
             The spec does NOT belong to this repo. It is authored in the specs repo, which is
             already checked out at `.specs-repo/` (remote: ${{ inputs.specs_repo }}, branch main).
 
+            Your ONE deliverable is a single file on disk. Do NOT run any `git` or `gh` commands
+            and do NOT try to open a PR — an automated step after you publishes the file. Just
+            write it:
+
             1. Read the issue that triggered this event (it was labeled `specify`) and any
                discussion in its comments. Read CLAUDE.md (root of THIS repo) for conventions.
             2. Read `.specs-repo/templates/spec.md`. That is the spec template and it is authoritative:
                keep every heading, replace every `<<...>>` placeholder with real content. Set
                **Repo** to `${{ github.repository }}` and **Refs** to
                `${{ github.repository }}#${{ github.event.issue.number }}`.
-            3. Write the filled spec to:
+            3. Write the filled spec to EXACTLY this path (create the directories):
                `.specs-repo/specs/${{ github.event.repository.name }}/${{ github.event.issue.number }}-<short-kebab-slug>/spec.md`
-               The `<repo>/<issue#>-<slug>` layout is how `implement` and `spec-guard` find it
-               later — do not invent a different path.
+               Pick a short kebab-case `<slug>` from the issue title. This `<repo>/<issue#>-<slug>`
+               layout is how `implement` and `spec-guard` find it later — do not invent another
+               path, and write NOTHING outside that one directory.
             4. Keep "Approach & tasks" light: if it starts needing real architecture, new contracts
                or a data model, do NOT expand it — note under "Open questions" that this needs the
                `plan` escalation. If the issue is already crisp the spec can be short, but it must
                be an artifact.
-            5. Publish it, working INSIDE `.specs-repo/`:
-               - `git checkout -b spec/${{ github.event.repository.name }}-${{ github.event.issue.number }}-<slug>`
-               - commit ONLY the new spec file
-               - `git push -u origin HEAD`
-               - open the PR against `main` of the specs repo:
-                 `gh pr create --repo ${{ inputs.specs_repo }} --base main
-                  --title "spec: <goal> (${{ github.event.repository.name }}#${{ github.event.issue.number }})"
-                  --body "Refs ${{ github.repository }}#${{ github.event.issue.number }}"`
-                 Use `Refs`, never `Fixes`/`Closes` — merging the spec must NOT close the issue,
-                 because that same issue is what triggers `implement` afterwards.
-            6. Finally, comment on the ORIGINATING issue
-               (`gh issue comment ${{ github.event.issue.number }} --repo ${{ github.repository }}`)
-               with the URL of the spec PR and one line saying that merging it approves the intent
-               and unblocks the `claude-implement` label.
           claude_args: |
             --model ${{ inputs.model }}
+
+      # --- deterministic publish: branch + commit + push + PR in the specs repo ----------------
+      - name: Publish the spec as a PR
+        id: publish
+        working-directory: .specs-repo
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+          SPECS_REPO: ${{ inputs.specs_repo }}
+          CALLER: ${{ github.repository }}
+          REPO_NAME: ${{ github.event.repository.name }}
+          ISSUE: ${{ github.event.issue.number }}
+        run: |
+          set -euo pipefail
+          git config user.name  "dmcsoftmx-agent-loop[bot]"
+          git config user.email "308612457+dmcsoftmx-agent-loop[bot]@users.noreply.github.com"
+
+          DIR=$(ls -d "specs/${REPO_NAME}/${ISSUE}-"*/ 2>/dev/null | head -n1 || true)
+          if [ -z "$DIR" ] || [ ! -f "${DIR}spec.md" ]; then
+            echo "::error::specify produced no spec at specs/${REPO_NAME}/${ISSUE}-*/spec.md. See the agent's progress comment on the issue."
+            exit 1
+          fi
+          DIR="${DIR%/}"
+          SLUG=$(basename "$DIR")                                   # e.g. 5-contributing-guide
+          BRANCH="spec/${REPO_NAME}-${SLUG}"
+          TITLE=$(sed -n 's/^#\s*Spec:\s*//p' "${DIR}/spec.md" | head -n1)
+          [ -n "$TITLE" ] || TITLE="$SLUG"
+
+          git switch -c "$BRANCH"
+          git add "$DIR"
+          git commit -m "spec: ${TITLE} (${REPO_NAME}#${ISSUE})"
+          git push -u origin "$BRANCH"
+
+          # `Refs`, never `Fixes`/`Closes`: merging the spec must NOT close the issue, because that
+          # same issue is what triggers `implement` next.
+          URL=$(gh pr create --repo "$SPECS_REPO" --base main --head "$BRANCH" \
+                  --title "spec: ${TITLE} (${REPO_NAME}#${ISSUE})" \
+                  --body "Refs ${CALLER}#${ISSUE}")
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+          echo "Spec PR: $URL"
+
+      - name: Link the spec PR on the issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          URL: ${{ steps.publish.outputs.url }}
+        run: |
+          gh issue comment "${{ github.event.issue.number }}" --repo "${{ github.repository }}" \
+            --body "📄 Spec drafted → ${URL}
+
+          Merging that PR **approves the intent**. After it's merged, add the \`claude-implement\` label here to build it."

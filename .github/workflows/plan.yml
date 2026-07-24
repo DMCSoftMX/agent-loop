@@ -73,17 +73,13 @@ jobs:
           token: ${{ steps.token.outputs.token }}
           fetch-depth: 0
 
-      # See specify.yml: the second checkout has no commit identity, and the agent can't set one,
-      # so its commit into .specs-repo would fail with "empty ident name".
-      - name: Give the specs checkout a commit identity
-        working-directory: .specs-repo
-        run: |
-          git config user.name  "dmcsoftmx-agent-loop[bot]"
-          git config user.email "308612457+dmcsoftmx-agent-loop[bot]@users.noreply.github.com"
+      # Keep the specs checkout out of the caller's working tree (nested git repo).
+      - name: Keep the specs checkout out of the code repo
+        run: printf '/.specs-repo/\n' >> .git/info/exclude
 
+      # As in specify.yml: the agent AUTHORS the two files; it does NOT run git or gh (the action's
+      # git sandbox blocks cross-repo branch/PR in an unattended run). The shell step publishes.
       - uses: anthropics/claude-code-action@v1
-        env:
-          GH_TOKEN: ${{ steps.token.outputs.token }}
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ steps.token.outputs.token }}
@@ -95,13 +91,16 @@ jobs:
 
             The specs repo is checked out at `.specs-repo/` (remote: ${{ inputs.specs_repo }},
             branch main). This repo's own code is checked out at the root — read it for context,
-            but do NOT modify or commit anything in it.
+            but do NOT modify anything in it.
+
+            Your deliverable is two files on disk. Do NOT run any `git` or `gh` commands and do NOT
+            open a PR — an automated step after you publishes them.
 
             1. Find the spec dir for this issue:
                `.specs-repo/specs/${{ github.event.repository.name }}/${{ github.event.issue.number }}-*/`
                Read its `spec.md` (source of truth) and CLAUDE.md (root of this repo). If no
-               `spec.md` exists, STOP and comment on the issue that `specify` must run and its PR
-               must be merged first.
+               `spec.md` exists, STOP: write nothing, and say in your progress notes that `specify`
+               must run and its PR be merged first.
             2. Read `.specs-repo/templates/plan.md` and `.specs-repo/templates/tasks.md`. Author
                `plan.md` and `tasks.md` in that SAME spec dir using those templates exactly: keep
                every heading, replace every `<<...>>`. Set Refs to
@@ -110,19 +109,53 @@ jobs:
                risks+mitigations, and a test strategy mapping each acceptance criterion to how it
                will be proven (flag what CI can't verify). `tasks.md` is an ordered checklist of
                discrete, individually verifiable tasks.
-            3. Do NOT restate the spec; design against it. Do NOT change `spec.md`; if it is wrong
-               or ambiguous, note it in the PR body and leave the open question. Changing spec.md
-               here would move its sha and turn every open code PR red.
-            4. Publish it, working INSIDE `.specs-repo/`:
-               - `git checkout -b plan/${{ github.event.repository.name }}-${{ github.event.issue.number }}-<slug>`
-               - commit ONLY the two new files
-               - `git push -u origin HEAD`
-               - `gh pr create --repo ${{ inputs.specs_repo }} --base main
-                  --title "plan: <goal> (${{ github.event.repository.name }}#${{ github.event.issue.number }})"
-                  --body "Refs ${{ github.repository }}#${{ github.event.issue.number }}"`
-                 `Refs`, never `Fixes` — merging must not close the issue that drives `implement`.
-            5. Comment on the originating issue
-               (`gh issue comment ${{ github.event.issue.number }} --repo ${{ github.repository }}`)
-               with the plan PR URL.
+            3. Do NOT restate the spec; design against it. Do NOT change `spec.md` — changing it
+               would move its sha and turn every open code PR red. If it is wrong or ambiguous, say
+               so in your progress notes and leave the open question.
           claude_args: |
             --model ${{ inputs.model }}
+
+      # --- deterministic publish: branch + commit + push + PR in the specs repo ----------------
+      - name: Publish the plan as a PR
+        id: publish
+        working-directory: .specs-repo
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+          SPECS_REPO: ${{ inputs.specs_repo }}
+          CALLER: ${{ github.repository }}
+          REPO_NAME: ${{ github.event.repository.name }}
+          ISSUE: ${{ github.event.issue.number }}
+        run: |
+          set -euo pipefail
+          git config user.name  "dmcsoftmx-agent-loop[bot]"
+          git config user.email "308612457+dmcsoftmx-agent-loop[bot]@users.noreply.github.com"
+
+          DIR=$(ls -d "specs/${REPO_NAME}/${ISSUE}-"*/ 2>/dev/null | head -n1 || true)
+          if [ -z "$DIR" ] || [ ! -f "${DIR}plan.md" ]; then
+            echo "::error::plan produced no plan.md under specs/${REPO_NAME}/${ISSUE}-*/. Most likely there is no merged spec to escalate — see the agent's progress comment."
+            exit 1
+          fi
+          DIR="${DIR%/}"
+          SLUG=$(basename "$DIR")
+          BRANCH="plan/${REPO_NAME}-${SLUG}"
+
+          git switch -c "$BRANCH"
+          git add "${DIR}/plan.md" "${DIR}/tasks.md"
+          git commit -m "plan: ${SLUG} (${REPO_NAME}#${ISSUE})"
+          git push -u origin "$BRANCH"
+
+          URL=$(gh pr create --repo "$SPECS_REPO" --base main --head "$BRANCH" \
+                  --title "plan: ${SLUG} (${REPO_NAME}#${ISSUE})" \
+                  --body "Refs ${CALLER}#${ISSUE}")
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+          echo "Plan PR: $URL"
+
+      - name: Link the plan PR on the issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          URL: ${{ steps.publish.outputs.url }}
+        run: |
+          gh issue comment "${{ github.event.issue.number }}" --repo "${{ github.repository }}" \
+            --body "🧭 Plan drafted → ${URL}
+
+          Merge it to lock the design, then add \`claude-implement\`."
