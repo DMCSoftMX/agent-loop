@@ -118,7 +118,7 @@ jobs:
             ${{ github.event.repository.name }}
             ${{ steps.specsname.outputs.name }}
 
-      - name: Specs repo is reachable and has TEMPLATE.md
+      - name: Specs repo is reachable, writable, and has the template
         if: steps.appsecret.outputs.has == 'true'
         env:
           TOKEN: ${{ steps.crosstoken.outputs.token }}
@@ -128,17 +128,27 @@ jobs:
             echo "::error::Could not mint an installation token. Usual causes: the App is not installed on ${{ github.repository_owner }}, the installation does not include BOTH this repo and ${SPECS_REPO}, or LOOP_APP_PRIVATE_KEY is not the full PEM (BEGIN/END lines included)."
             echo "FAIL app-token" >> "$RUNNER_TEMP/results"; exit 0
           fi
-          # `.permissions.push` reflects what THIS token can do, so one call covers both
-          # "can I see it" and "can specify push a branch there".
-          PUSH=$(GH_TOKEN="$TOKEN" gh api "repos/${SPECS_REPO}" -q .permissions.push 2>/dev/null || true)
-          if [ -z "$PUSH" ]; then
+
+          # READ: do NOT use `.permissions` — for a GitHub App installation token GitHub returns
+          # that object with EVERY role boolean false (admin/maintain/push/... all false), because
+          # those are collaborator roles a bot identity never holds. The token's real power comes
+          # from the App's installation permissions, not from this field. So test read by whether
+          # the repo responds at all.
+          if ! GH_TOKEN="$TOKEN" gh api "repos/${SPECS_REPO}" -q .full_name >/dev/null 2>&1; then
             echo "::error::The token cannot read ${SPECS_REPO}. Add that repo to the App installation."
             echo "FAIL specs-access" >> "$RUNNER_TEMP/results"; exit 0
           fi
-          if [ "$PUSH" != "true" ]; then
-            echo "::error::The token can read ${SPECS_REPO} but not write to it. specify pushes a spec branch there — give the App 'Contents: Read and write' and 'Pull requests: Read and write'."
+
+          # WRITE: probe it for real, since the permission field lies. Creating an unreferenced git
+          # blob needs Contents:write and is invisible — no branch, no file, no history; git GCs it.
+          # A read-only App fails here, which is exactly the case that would otherwise die inside
+          # the first `specify`.
+          if ! GH_TOKEN="$TOKEN" gh api --method POST "repos/${SPECS_REPO}/git/blobs" \
+                 -f content="preflight write probe" -f encoding="utf-8" >/dev/null 2>&1; then
+            echo "::error::The token can read ${SPECS_REPO} but not write to it. specify pushes a spec branch there — give the App 'Contents: Read and write' and 'Pull requests: Read and write', then re-install."
             echo "FAIL specs-write" >> "$RUNNER_TEMP/results"; exit 0
           fi
+
           if ! GH_TOKEN="$TOKEN" gh api "repos/${SPECS_REPO}/contents/templates/spec.md" -q .name >/dev/null 2>&1; then
             echo "::error::${SPECS_REPO} has no templates/spec.md — specify reads the spec template from there."
             echo "FAIL specs-template" >> "$RUNNER_TEMP/results"; exit 0
