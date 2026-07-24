@@ -68,15 +68,19 @@ jobs:
             echo "FAIL setupenv" >> "$RUNNER_TEMP/results"; exit 0
           fi
           . ./setup.env
-          miss=""
-          for k in STACK ALLOWED_VERIFY_TOOLS; do
-            [ -z "${!k}" ] && miss="$miss $k"
-          done
-          if [ -n "$miss" ]; then
-            echo "::error::setup.env is missing keys:$miss"
+          # STACK is the only hard requirement — it drives the toolchain step.
+          if [ -z "$STACK" ]; then
+            echo "::error::setup.env has no STACK (node|python|go|rust|custom). It selects the toolchain."
             echo "FAIL setupenv" >> "$RUNNER_TEMP/results"
           else
             echo "PASS setupenv" >> "$RUNNER_TEMP/results"
+          fi
+          # ALLOWED_VERIFY_TOOLS empty is VALID, not an error: a repo with no lint/type/test step
+          # (e.g. docs-only) legitimately leaves it blank, and implement handles that by falling
+          # back to just the editing tools. Warn so a real code repo notices a likely omission,
+          # but never block on it.
+          if [ -z "$ALLOWED_VERIFY_TOOLS" ]; then
+            echo "::warning::setup.env has no ALLOWED_VERIFY_TOOLS — the agent will self-verify nothing. Fine for a docs-only repo; a code repo probably wants lint/typecheck/test here."
           fi
 
       # ---- cross-repo: App creds mint a token that actually reaches specs ---
