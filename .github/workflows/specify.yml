@@ -3,9 +3,18 @@ name: Specify (reusable)
 # The SPECIFY phase of the agent loop, maintained ONCE here. Projects don't copy it — their thin
 # stub calls it: `uses: DMCSoftMX/agent-loop/.github/workflows/specify.yml@vX`. The trigger
 # (issues: labeled) and the label guard live in the STUB (see stubs/loop.yml); this file is pure
-# logic. The spec TEMPLATE is INLINED in the prompt below, so this reusable needs NO checkout of
-# this (private) engine repo — the caller repo's own default token is enough. The template is
-# versioned with this file: whatever `@vX` the stub pins, that's the template you get.
+# logic.
+#
+# SINCE v0.5.0 (ADR-0001): the spec is written to the DEDICATED SPECS REPO, not to the caller.
+# Two consequences worth knowing:
+#   * Cross-repo auth is REQUIRED. The caller's default GITHUB_TOKEN cannot touch another repo, so
+#     the stub must supply LOOP_APP_ID / LOOP_APP_PRIVATE_KEY and we mint an installation token
+#     scoped to [caller repo, specs]. No fallback: a repo without those secrets fails loudly here
+#     rather than silently writing specs to the wrong place. Repos migrate by bumping their pin.
+#   * The spec TEMPLATE now lives in the specs repo (templates/spec.md) instead of inlined below. It is
+#     read from the checkout, so editing the template no longer needs an engine tag — the tradeoff
+#     is that the template floats to latest instead of being pinned with @vX. For a reviewed
+#     document in a document repo, that's the right side of the trade.
 on:
   workflow_call:
     inputs:
@@ -13,105 +22,119 @@ on:
         description: Claude model for this phase (per-repo override, optional).
         type: string
         default: sonnet
+      specs_repo:
+        description: The specs repo (system of record) that receives the spec PR.
+        type: string
+        default: DMCSoftMX/specs
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN:
         required: true
+      # Declared optional on purpose: a missing REQUIRED secret fails the job at `startup_failure`,
+      # with no log and no annotation — the exact opaque failure preflight exists to kill. The
+      # first step below turns it into a readable error instead.
+      LOOP_APP_ID:
+        required: false
+      LOOP_APP_PRIVATE_KEY:
+        required: false
 
 jobs:
   specify:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
-      contents: write       # commits the spec on a branch in the CALLER repo
-      pull-requests: write  # opens the spec PR
-      issues: write         # progress comment (track_progress)
+      contents: read         # the spec no longer lands here; only the specs repo is written
+      pull-requests: write
+      issues: write          # progress comment (track_progress) + the spec PR link
       id-token: write
     steps:
-      # The CALLER repo — where CLAUDE.md lives and where the spec PR is created.
+      - name: Require the cross-repo App credentials
+        env:
+          APP_ID: ${{ secrets.LOOP_APP_ID }}
+          APP_KEY: ${{ secrets.LOOP_APP_PRIVATE_KEY }}
+        run: |
+          if [ -z "$APP_ID" ] || [ -z "$APP_KEY" ]; then
+            echo "::error::Since v0.5.0 the spec is written to ${{ inputs.specs_repo }}, which the default GITHUB_TOKEN cannot reach. Set LOOP_APP_ID and LOOP_APP_PRIVATE_KEY on this repo (SETUP.md, 'GitHub App')."
+            exit 1
+          fi
+
+      # `repositories:` below wants bare names, but the input is `owner/repo` (what `gh --repo`
+      # needs). GitHub expressions have no split(), so strip the owner here.
+      - name: Resolve the specs repo name
+        id: specs
+        env:
+          SPECS_REPO: ${{ inputs.specs_repo }}
+        run: printf 'name=%s\n' "${SPECS_REPO#*/}" >> "$GITHUB_OUTPUT"
+
+      # One installation token covering BOTH repos: the caller (issue + CLAUDE.md) and the specs
+      # repo (where the spec PR is opened).
+      - name: Mint cross-repo token
+        id: token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.LOOP_APP_ID }}
+          private-key: ${{ secrets.LOOP_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: |
+            ${{ github.event.repository.name }}
+            ${{ steps.specs.outputs.name }}
+
+      # The CALLER repo — where CLAUDE.md and the issue live. Read-only for this phase.
       - uses: actions/checkout@v4
         with:
           fetch-depth: 1
 
+      # The SPECS repo — where the spec is authored and the PR is opened. `token` is persisted by
+      # checkout, so the agent's `git push` inside this directory just works.
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.specs_repo }}
+          path: .specs-repo
+          token: ${{ steps.token.outputs.token }}
+          fetch-depth: 0
+
       - uses: anthropics/claude-code-action@v1
+        env:
+          # `gh` inside the agent must be able to open a PR in the OTHER repo.
+          GH_TOKEN: ${{ steps.token.outputs.token }}
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ steps.token.outputs.token }}
           # REQUIRED for issue events: without this the agent runs but does NOT post progress.
           track_progress: "true"
           prompt: |
             You are a SPECIFY agent (SDD phase 1). Capture INTENT as a durable artifact.
             Do NOT design the solution and do NOT write product code.
 
+            The spec does NOT belong to this repo. It is authored in the specs repo, which is
+            already checked out at `.specs-repo/` (remote: ${{ inputs.specs_repo }}, branch main).
+
             1. Read the issue that triggered this event (it was labeled `specify`) and any
-               discussion in its comments. Read CLAUDE.md (repo root) for conventions.
-            2. Author a spec at `specs/${{ github.event.issue.number }}-<short-kebab-slug>/spec.md`
-               using EXACTLY the template below. Keep every heading; replace every `<<...>>`
-               placeholder with real content (set Refs to #${{ github.event.issue.number }}):
-
-               ===== BEGIN spec.md TEMPLATE =====
-               # Spec: <<title>>
-
-               > **Refs:** #<<issue>>  ·  **Status:** draft → approved (on merge)
-               > The WHAT and WHY, plus a **lightweight HOW**. For heavy or cross-cutting work,
-               > escalate the design to a full `plan.md` via the `plan` label — otherwise keep it
-               > inline below.
-
-               ## Problem / motivation
-
-               <<What need or problem exists today, and why it matters. 1–3 sentences.>>
-
-               ## Goal
-
-               <<The outcome in one sentence. What is true when this is done.>>
-
-               ## Scope
-
-               **In:**
-               - <<what this work covers>>
-
-               **Out (non-goals):**
-               - <<what this work explicitly does NOT cover>>
-
-               ## User-visible behavior
-
-               <<How the change is observed by a user / caller / consumer. Before → after.>>
-
-               ## Acceptance criteria
-
-               <!-- Specific and VERIFIABLE. This is what review checks the PR against; anything
-                    left uncovered is BLOCKING. Prefer observable outcomes over implementation. -->
-
-               - [ ] <<criterion 1>>
-               - [ ] <<criterion 2>>
-               - [ ] CI green (lint · typecheck · test · build)
-               - [ ] Follows the conventions in CLAUDE.md
-
-               ## Approach & tasks
-
-               <!-- Lightweight HOW: the intended approach in a few lines + a short task checklist.
-                    Enough for the implementer not to guess. If this section starts needing real
-                    architecture, contracts or a data model, STOP and escalate to plan.md. -->
-
-               <<one or two sentences on the intended approach; name the main files/areas>>
-
-               - [ ] <<task 1>>
-               - [ ] <<task 2>>
-
-               ## Edge cases & risks
-
-               - <<edge case / failure mode / runtime behavior CI can't verify>>
-
-               ## Open questions
-
-               - <<anything that needs a human decision before/while implementing>>
-               ===== END spec.md TEMPLATE =====
-
-            3. Keep "Approach & tasks" light: if it starts needing real architecture, new contracts
+               discussion in its comments. Read CLAUDE.md (root of THIS repo) for conventions.
+            2. Read `.specs-repo/templates/spec.md`. That is the spec template and it is authoritative:
+               keep every heading, replace every `<<...>>` placeholder with real content. Set
+               **Repo** to `${{ github.repository }}` and **Refs** to
+               `${{ github.repository }}#${{ github.event.issue.number }}`.
+            3. Write the filled spec to:
+               `.specs-repo/specs/${{ github.event.repository.name }}/${{ github.event.issue.number }}-<short-kebab-slug>/spec.md`
+               The `<repo>/<issue#>-<slug>` layout is how `implement` and `spec-guard` find it
+               later — do not invent a different path.
+            4. Keep "Approach & tasks" light: if it starts needing real architecture, new contracts
                or a data model, do NOT expand it — note under "Open questions" that this needs the
                `plan` escalation. If the issue is already crisp the spec can be short, but it must
                be an artifact.
-            4. Create a branch `spec/${{ github.event.issue.number }}-<slug>`, commit ONLY the new
-               file under `specs/`, and open a PR against `develop` with body
-               `Refs #${{ github.event.issue.number }}` (NOT `Fixes` — merging the spec must not
-               close the issue). Title: `spec: <goal> (#${{ github.event.issue.number }})`.
+            5. Publish it, working INSIDE `.specs-repo/`:
+               - `git checkout -b spec/${{ github.event.repository.name }}-${{ github.event.issue.number }}-<slug>`
+               - commit ONLY the new spec file
+               - `git push -u origin HEAD`
+               - open the PR against `main` of the specs repo:
+                 `gh pr create --repo ${{ inputs.specs_repo }} --base main
+                  --title "spec: <goal> (${{ github.event.repository.name }}#${{ github.event.issue.number }})"
+                  --body "Refs ${{ github.repository }}#${{ github.event.issue.number }}"`
+                 Use `Refs`, never `Fixes`/`Closes` — merging the spec must NOT close the issue,
+                 because that same issue is what triggers `implement` afterwards.
+            6. Finally, comment on the ORIGINATING issue
+               (`gh issue comment ${{ github.event.issue.number }} --repo ${{ github.repository }}`)
+               with the URL of the spec PR and one line saying that merging it approves the intent
+               and unblocks the `claude-implement` label.
           claude_args: |
             --model ${{ inputs.model }}

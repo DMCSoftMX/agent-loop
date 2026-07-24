@@ -17,9 +17,17 @@ on:
         description: Claude model for the ping (per-repo override, optional).
         type: string
         default: sonnet
+      specs_repo:
+        description: The specs repo the loop reconciles against (ADR-0001).
+        type: string
+        default: DMCSoftMX/specs
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN:
         required: true
+      LOOP_APP_ID:
+        required: false
+      LOOP_APP_PRIVATE_KEY:
+        required: false
 
 jobs:
   preflight:
@@ -70,6 +78,72 @@ jobs:
           else
             echo "PASS setupenv" >> "$RUNNER_TEMP/results"
           fi
+
+      # ---- cross-repo: App creds mint a token that actually reaches specs ---
+      # Since v0.5.0 the spec lives in another repo (ADR-0001). This is the one
+      # blocker preflight can prove end-to-end BEFORE the first `specify`: not
+      # just "the secrets exist" but "the minted token can read the specs repo
+      # and the template is there".
+      - name: Resolve the specs repo name
+        id: specsname
+        env:
+          SPECS_REPO: ${{ inputs.specs_repo }}
+        run: printf 'name=%s\n' "${SPECS_REPO#*/}" >> "$GITHUB_OUTPUT"
+
+      - name: Cross-repo App credentials are set
+        id: appsecret
+        env:
+          APP_ID: ${{ secrets.LOOP_APP_ID }}
+          APP_KEY: ${{ secrets.LOOP_APP_PRIVATE_KEY }}
+        run: |
+          if [ -z "$APP_ID" ] || [ -z "$APP_KEY" ]; then
+            echo "::error::LOOP_APP_ID / LOOP_APP_PRIVATE_KEY not set. specify, implement and spec-guard all need a token for ${{ inputs.specs_repo }} — the default GITHUB_TOKEN is scoped to this repo only. See SETUP.md, 'GitHub App'."
+            echo "has=false" >> "$GITHUB_OUTPUT"
+            echo "FAIL app-creds" >> "$RUNNER_TEMP/results"
+          else
+            echo "has=true" >> "$GITHUB_OUTPUT"
+            echo "PASS app-creds" >> "$RUNNER_TEMP/results"
+          fi
+
+      - name: Mint cross-repo token
+        id: crosstoken
+        if: steps.appsecret.outputs.has == 'true'
+        continue-on-error: true
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.LOOP_APP_ID }}
+          private-key: ${{ secrets.LOOP_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: |
+            ${{ github.event.repository.name }}
+            ${{ steps.specsname.outputs.name }}
+
+      - name: Specs repo is reachable and has TEMPLATE.md
+        if: steps.appsecret.outputs.has == 'true'
+        env:
+          TOKEN: ${{ steps.crosstoken.outputs.token }}
+          SPECS_REPO: ${{ inputs.specs_repo }}
+        run: |
+          if [ -z "$TOKEN" ]; then
+            echo "::error::Could not mint an installation token. Usual causes: the App is not installed on ${{ github.repository_owner }}, the installation does not include BOTH this repo and ${SPECS_REPO}, or LOOP_APP_PRIVATE_KEY is not the full PEM (BEGIN/END lines included)."
+            echo "FAIL app-token" >> "$RUNNER_TEMP/results"; exit 0
+          fi
+          # `.permissions.push` reflects what THIS token can do, so one call covers both
+          # "can I see it" and "can specify push a branch there".
+          PUSH=$(GH_TOKEN="$TOKEN" gh api "repos/${SPECS_REPO}" -q .permissions.push 2>/dev/null || true)
+          if [ -z "$PUSH" ]; then
+            echo "::error::The token cannot read ${SPECS_REPO}. Add that repo to the App installation."
+            echo "FAIL specs-access" >> "$RUNNER_TEMP/results"; exit 0
+          fi
+          if [ "$PUSH" != "true" ]; then
+            echo "::error::The token can read ${SPECS_REPO} but not write to it. specify pushes a spec branch there — give the App 'Contents: Read and write' and 'Pull requests: Read and write'."
+            echo "FAIL specs-write" >> "$RUNNER_TEMP/results"; exit 0
+          fi
+          if ! GH_TOKEN="$TOKEN" gh api "repos/${SPECS_REPO}/contents/templates/spec.md" -q .name >/dev/null 2>&1; then
+            echo "::error::${SPECS_REPO} has no templates/spec.md — specify reads the spec template from there."
+            echo "FAIL specs-template" >> "$RUNNER_TEMP/results"; exit 0
+          fi
+          echo "PASS specs-access" >> "$RUNNER_TEMP/results"
 
       # ---- convention: labels exist (GitHub silently drops unknown ones) ---
       - name: Required labels exist
