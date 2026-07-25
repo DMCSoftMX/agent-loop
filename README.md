@@ -16,11 +16,11 @@ agent-loop/                              ← DMCSoftMX/agent-loop (semver-tagged
 │   ├── plan.yml          optional escalation · posts a deep plan comment
 │   ├── implement.yml     agent implements against the spec · writes the .specs/<n>.ref pin
 │   ├── claude.yml        interactive @claude
-│   ├── review.yml        PR review vs the spec · emits REVIEW-VERDICT
+│   ├── review.yml        PR review vs the spec · posts it · REVIEW-VERDICT BLOCK ⇒ red check
 │   ├── pr-gate.yml       binding definition-of-done gate
 │   ├── spec-guard.yml    anti-drift: re-hashes the spec comment, must match the pin
 │   ├── ci.yml            stack-aware validate (reads setup.env)
-│   └── preflight.yml     one-shot setup check (workflow_dispatch): secret · Claude App · config
+│   └── preflight.yml     one-shot setup check (workflow_dispatch): secret · Claude App · config · gate enforcement level
 │   (spec/plan templates are INLINED in the specify/plan prompts — no separate files, no engine
 │    checkout, so this repo can stay private with zero per-repo tokens.)
 └── stubs/                what each PROJECT repo copies (once)
@@ -37,7 +37,7 @@ every event (labels, `@claude`, PRs, push) to the reusable workflows here, pinne
 jobs:
   specify:
     if: github.event_name == 'issues' && github.event.label.name == 'specify'
-    uses: DMCSoftMX/agent-loop/.github/workflows/specify.yml@v0.6.0
+    uses: DMCSoftMX/agent-loop/.github/workflows/specify.yml@v0.7.0
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
   # … plan · implement · claude · review · pr-gate · spec-guard · ci · preflight (same shape)
@@ -59,7 +59,7 @@ first real `specify`. It only fires on `workflow_dispatch`; normal events skip i
 *can't* catch from the inside: if the stub lacks its `permissions:` block, preflight itself won't
 start — a `startup_failure` on preflight **is** that diagnosis.)
 
-## The SDD flow (v0.6.0)
+## The SDD flow (v0.7.0)
 
 1. **`specify`** (label `specify`) → the agent drafts the spec; a deterministic step upserts it as
    the issue's canonical comment. Re-running edits that same comment in place.
@@ -72,7 +72,16 @@ start — a `startup_failure` on preflight **is** that diagnosis.)
    it stops rather than silently building from the issue body.
 5. **Gates** on the PR → `review` · `pr-gate` · `spec-guard` · `ci`. **`spec-guard`** re-fetches the
    pinned comment and re-hashes it: if someone edited the spec after the code was written, the hash
-   no longer matches and the PR goes red until it is reconciled.
+   no longer matches and the PR goes red until it is reconciled. **`review`** posts its review
+   against the spec and ends with `REVIEW-VERDICT: PASS|BLOCK`; a `BLOCK` (or a run that produced no
+   verdict at all) turns the check red — a green `review` now means it actually reviewed, not that it
+   stayed silent.
+
+> **Enforcement is only as strong as your plan.** These gates *report* on every PR, but they only
+> *block a merge* where the branch is protected and admins are included. On a **private Free** repo
+> the protection API is unavailable, so the gates are **advisory** — a green loop is not an enforced
+> loop, and the human is the merge gate. `preflight` prints the enforcement level for `develop` and
+> `main` so you know which world you're in; see *Branch protection* below.
 
 ## Runtime model (the key tricks)
 
@@ -98,7 +107,11 @@ start — a `startup_failure` on preflight **is** that diagnosis.)
 
 - Engine released with **semver tags** (`v0.2.0`, `v0.3.0`, …). The `@vX` pin **is** the migration
   mechanism: `v0.5.x` = specs in a dedicated repo (ADR-0001), `v0.6.x` = specs as issue comments
-  (ADR-0002). No runtime fallback — a repo migrates by bumping its pin.
+  (ADR-0002), `v0.7.x` = `review` posts + emits an enforceable verdict, agent phases surface
+  `permission_denials_count`, and `preflight` reports the gate enforcement level. No runtime
+  fallback — a repo migrates by bumping its pin. (`v0.7.0` also adds an optional
+  `administration: read` to the stub so preflight can read branch protection; without it that one
+  report degrades to "unknown".)
 - Projects pin `@vX` in their stub. **Renovate** ([`stubs/renovate.json`](stubs/renovate.json))
   opens a **bump PR** in each project on a new tag → you merge it (human gate preserved).
 
@@ -110,8 +123,18 @@ protection on `develop` to require:
 - `ci / validate`
 - `pr-gate / pr-gate`
 - `spec-guard / spec-guard`
+- `review / review` — *optional*: `review` can now turn red on `REVIEW-VERDICT: BLOCK`, so you *may*
+  require it. Expect the occasional `--admin` override when the agent blocks a false positive.
 
 (and on `main`: `ci / validate` only — the gates skip on release PRs).
+
+**But protection only bites where the plan allows it.** On a **private Free** repo the
+branch-protection API returns `403 Upgrade…`, so none of the above can be *required* — the checks run
+and report but nothing stops the merge. And requiring a **review approval** on a solo repo's `main`
+can only be satisfied by an `--admin` bypass (you can't approve your own PR), which just trains
+everyone to bypass. So be honest about it: **on this plan the human is the gate.** Run `preflight`
+(it now prints, per branch, whether protection is *enforcing*, *admins-bypass*, or *advisory only*)
+to see exactly where your repo stands — it needs the stub's `administration: read` grant to read it.
 
 ## What stays central vs per-repo
 

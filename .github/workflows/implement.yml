@@ -125,6 +125,7 @@ jobs:
         run: ${{ env.INSTALL_CMD }}
 
       - uses: anthropics/claude-code-action@v1
+        id: claude
         env:
           GH_TOKEN: ${{ github.token }}
         with:
@@ -158,3 +159,24 @@ jobs:
           claude_args: |
             --model ${{ inputs.model }}
             --allowedTools ${{ env.AGENT_TOOLS }}
+
+      # Surface permission_denials_count (retro #3): if the agent was blocked mid-run it may have
+      # skipped an intended edit or commit while still reporting green. Warn loud; the pin/PR
+      # assertions above already fail hard on a missing artifact.
+      - name: Surface permission denials
+        if: always()
+        env:
+          EXEC: ${{ steps.claude.outputs.execution_file }}
+        run: |
+          set -uo pipefail
+          f="${EXEC:-/home/runner/work/_temp/claude-execution-output.json}"
+          [ -f "$f" ] || exit 0
+          denials=$(jq -r '[.. | objects | .permission_denials_count? // empty] | last // empty' "$f" 2>/dev/null || true)
+          if [ -z "${denials:-}" ]; then
+            denials=$(grep -oE '"permission_denials_count"[[:space:]]*:[[:space:]]*[0-9]+' "$f" | grep -oE '[0-9]+' | tail -n1 || true)
+          fi
+          [ -n "${denials:-}" ] || denials=0
+          echo "- permission_denials_count: **${denials}**" >> "$GITHUB_STEP_SUMMARY"
+          if [ "${denials}" -gt 0 ] 2>/dev/null; then
+            echo "::warning::implement hit ${denials} permission denial(s) — it may have skipped an intended action. Check the run and the PR diff."
+          fi
