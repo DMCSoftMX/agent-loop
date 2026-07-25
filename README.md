@@ -109,9 +109,7 @@ start — a `startup_failure` on preflight **is** that diagnosis.)
   mechanism: `v0.5.x` = specs in a dedicated repo (ADR-0001), `v0.6.x` = specs as issue comments
   (ADR-0002), `v0.7.x` = `review` posts + emits an enforceable verdict, agent phases surface
   `permission_denials_count`, and `preflight` reports the gate enforcement level. No runtime
-  fallback — a repo migrates by bumping its pin. (`v0.7.0` also adds an optional
-  `administration: read` to the stub so preflight can read branch protection; without it that one
-  report degrades to "unknown".)
+  fallback — a repo migrates by bumping its pin.
 - Projects pin `@vX` in their stub. **Renovate** ([`stubs/renovate.json`](stubs/renovate.json))
   opens a **bump PR** in each project on a new tag → you merge it (human gate preserved).
 
@@ -133,8 +131,9 @@ branch-protection API returns `403 Upgrade…`, so none of the above can be *req
 and report but nothing stops the merge. And requiring a **review approval** on a solo repo's `main`
 can only be satisfied by an `--admin` bypass (you can't approve your own PR), which just trains
 everyone to bypass. So be honest about it: **on this plan the human is the gate.** Run `preflight`
-(it now prints, per branch, whether protection is *enforcing*, *admins-bypass*, or *advisory only*)
-to see exactly where your repo stands — it needs the stub's `administration: read` grant to read it.
+(it now prints, per branch, whether the branch is *protected* or *advisory only* — it reads the
+branch's `protected` flag with the default token; the finer *admins-bypass* detail needs admin the
+loop token doesn't have, so confirm "Include administrators" yourself in Settings → Branches).
 
 ## What stays central vs per-repo
 
