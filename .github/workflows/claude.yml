@@ -4,26 +4,17 @@ name: Claude interactive (reusable)
 # `prompt:`). Reads the caller's setup.env for the stack + self-verify commands. The @claude
 # mention guard lives in the project stub.
 #
-# SINCE v0.5.0 (ADR-0001) specs live in the specs repo. This phase is the ad-hoc escape hatch and
-# is often used where no spec exists at all, so the specs checkout is BEST EFFORT: if the App
-# credentials are missing it still runs, just without spec context.
+# SINCE v0.6.0 (ADR-0002) specs are issue comments in THIS repo — no App, no cross-repo checkout.
+# This phase is the ad-hoc escape hatch and is often used where no spec exists at all.
 on:
   workflow_call:
     inputs:
       model:
         type: string
         default: sonnet
-      specs_repo:
-        description: The specs repo (system of record), mounted read-only for context.
-        type: string
-        default: DMCSoftMX/specs
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN:
         required: true
-      LOOP_APP_ID:
-        required: false
-      LOOP_APP_PRIVATE_KEY:
-        required: false
 
 jobs:
   claude:
@@ -34,44 +25,10 @@ jobs:
       pull-requests: write
       issues: write
       id-token: write
-    env:
-      # The `secrets` context is not usable in a step-level `if:`, so hoist the test here.
-      HAS_APP: ${{ secrets.LOOP_APP_ID != '' && secrets.LOOP_APP_PRIVATE_KEY != '' }}
     steps:
-      - name: Resolve the specs repo name
-        id: specs
-        env:
-          SPECS_REPO: ${{ inputs.specs_repo }}
-        run: printf 'name=%s\n' "${SPECS_REPO#*/}" >> "$GITHUB_OUTPUT"
-
-      - name: Mint cross-repo token
-        id: token
-        if: env.HAS_APP == 'true'
-        continue-on-error: true
-        uses: actions/create-github-app-token@v1
-        with:
-          app-id: ${{ secrets.LOOP_APP_ID }}
-          private-key: ${{ secrets.LOOP_APP_PRIVATE_KEY }}
-          owner: ${{ github.repository_owner }}
-          repositories: ${{ steps.specs.outputs.name }}
-
       - uses: actions/checkout@v4
         with:
           fetch-depth: 1
-
-      - uses: actions/checkout@v4
-        if: steps.token.outputs.token != ''
-        continue-on-error: true
-        with:
-          repository: ${{ inputs.specs_repo }}
-          path: .specs-repo
-          token: ${{ steps.token.outputs.token }}
-          fetch-depth: 1
-
-      # `.specs-repo/` sits inside the working tree; without this an eager `git add` would drag
-      # it in as a gitlink. Local-only, so it never dirties the repo.
-      - name: Keep the specs checkout out of the code repo
-        run: printf '/.specs-repo/\n' >> .git/info/exclude
 
       - name: Load stack config from setup.env
         run: |
@@ -80,8 +37,8 @@ jobs:
             printf '%s=%s\n' "$v" "${!v}" >> "$GITHUB_ENV"
           done
           # @claude may be asked to edit code, so always include the editing tools.
-          # `--allowedTools` sets the exact allowlist (read-only base aside), so passing only
-          # the verify commands would drop Write/Edit and the agent couldn't change any file.
+          # `--allowedTools` sets the exact allowlist (read-only base aside), so passing only the
+          # verify commands would drop Write/Edit and the agent couldn't change any file.
           BASE="Edit,Write,MultiEdit"
           if [ -n "$ALLOWED_VERIFY_TOOLS" ]; then
             printf 'AGENT_TOOLS=%s,%s\n' "$BASE" "$ALLOWED_VERIFY_TOOLS" >> "$GITHUB_ENV"
@@ -110,4 +67,4 @@ jobs:
           claude_args: |
             --model ${{ inputs.model }}
             --allowedTools ${{ env.AGENT_TOOLS }}
-            --append-system-prompt "Specs live in a separate repo, mounted read-only at .specs-repo/ (absent if unavailable). If this work maps to an issue #N, look for .specs-repo/specs/${{ github.event.repository.name }}/N-*/ ; if found, treat spec.md as the source of truth (meet its acceptance criteria) and follow plan.md/tasks.md when present. NEVER edit or commit anything under .specs-repo/ — it is another repository; report needed spec changes instead. Dependencies are already installed on the runner. Before opening the PR, verify your change by running the project's lint, typecheck and test commands; if anything fails, fix it and re-run until it passes. Do NOT run the build (slow; CI validates it). If after several attempts something is still red, open the PR anyway but state explicitly what is failing and why."
+            --append-system-prompt "Specs live as issue comments in this repo, marked with an HTML comment `<!-- agent-spec:N -->` (and `<!-- agent-plan:N -->` for a deep plan). If this work maps to an issue #N that has such a comment, treat it as the source of truth: meet its acceptance criteria, and follow the plan when present. If none exists, work from the issue/PR text. Dependencies are already installed on the runner. Before opening a PR, verify your change by running the project's lint, typecheck and test commands; if anything fails, fix it and re-run until it passes. Do NOT run the build (slow; CI validates it). If after several attempts something is still red, open the PR anyway but state explicitly what is failing and why."

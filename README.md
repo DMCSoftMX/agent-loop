@@ -12,17 +12,17 @@ no copied workflows. Change something here + tag → Renovate opens a bump PR in
 ```
 agent-loop/                              ← DMCSoftMX/agent-loop (semver-tagged)
 ├── .github/workflows/                   ← the reusable engine (on: workflow_call)
-│   ├── specify.yml       phase 1 · writes spec.md
-│   ├── plan.yml          optional escalation · deep plan.md + tasks.md
-│   ├── implement.yml     agent implements against the spec
+│   ├── specify.yml       phase 1 · posts the spec as the issue's canonical comment
+│   ├── plan.yml          optional escalation · posts a deep plan comment
+│   ├── implement.yml     agent implements against the spec · writes the .specs/<n>.ref pin
 │   ├── claude.yml        interactive @claude
 │   ├── review.yml        PR review vs the spec · emits REVIEW-VERDICT
 │   ├── pr-gate.yml       binding definition-of-done gate
-│   ├── spec-guard.yml    anti-drift: code change must reconcile its spec
+│   ├── spec-guard.yml    anti-drift: re-hashes the spec comment, must match the pin
 │   ├── ci.yml            stack-aware validate (reads setup.env)
-│   └── preflight.yml     one-shot setup check (workflow_dispatch): secret · token · App · config
-│   (spec/plan/tasks templates are INLINED in the specify/plan prompts — no separate files,
-│    no engine checkout, so this repo can stay private with zero per-repo tokens.)
+│   └── preflight.yml     one-shot setup check (workflow_dispatch): secret · Claude App · config
+│   (spec/plan templates are INLINED in the specify/plan prompts — no separate files, no engine
+│    checkout, so this repo can stay private with zero per-repo tokens.)
 └── stubs/                what each PROJECT repo copies (once)
     ├── loop.yml          the thin router stub (.github/workflows/loop.yml)
     └── renovate.json     auto-bumps the engine version across projects
@@ -37,42 +37,56 @@ every event (labels, `@claude`, PRs, push) to the reusable workflows here, pinne
 jobs:
   specify:
     if: github.event_name == 'issues' && github.event.label.name == 'specify'
-    uses: DMCSoftMX/agent-loop/.github/workflows/specify.yml@v0.5.0
-    secrets: inherit
+    uses: DMCSoftMX/agent-loop/.github/workflows/specify.yml@v0.6.0
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
   # … plan · implement · claude · review · pr-gate · spec-guard · ci · preflight (same shape)
 ```
 
 That's the whole footprint. Plus the per-repo data that rightly stays local: `CLAUDE.md`,
 `setup.env`, and the `.specs/<issue#>.ref` pins.
 
-**Since v0.5.0 the specs themselves are NOT local.** They live in
-[`DMCSoftMX/specs`](https://github.com/DMCSoftMX/specs) (ADR-0001) — a code repo versions code,
-not documents. Each repo keeps only a pointer per issue. See *Cross-repo auth* below: this is the
-one thing v0.5.0 asks of you that v0.4.x didn't.
+**Since v0.6.0 the spec is a comment on the issue** (ADR-0002) — a canonical comment marked
+`<!-- agent-spec:<n> -->` that `specify` posts and you edit inline to approve. Everything happens in
+**this repo** with the default `GITHUB_TOKEN`: no dedicated specs repo, no GitHub App, no cross-repo
+token, no cross-account tax. The only secret the loop needs is `CLAUDE_CODE_OAUTH_TOKEN`, passed
+**explicitly** (not `secrets: inherit`, which does not cross the account/org boundary).
 
 **After wiring the stub, run preflight once** (Actions → *Agent loop* → *Run workflow*). It pings
-the App-token exchange and checks the secret, `setup.env`, labels and default branch, then fails
-with a clear checklist — so a misconfigured repo surfaces the problem here instead of in the first
-real `specify`. It only fires on `workflow_dispatch`; normal events skip it. (One caveat it *can't*
-catch from the inside: if the stub lacks its `permissions:` block or engine access isn't
-`organization`, preflight itself won't start — a `startup_failure` on preflight **is** that
-diagnosis.)
+the Claude App-token exchange and checks the secret, `setup.env`, labels and default branch, then
+fails with a clear checklist — so a misconfigured repo surfaces the problem here instead of in the
+first real `specify`. It only fires on `workflow_dispatch`; normal events skip it. (One caveat it
+*can't* catch from the inside: if the stub lacks its `permissions:` block, preflight itself won't
+start — a `startup_failure` on preflight **is** that diagnosis.)
+
+## The SDD flow (v0.6.0)
+
+1. **`specify`** (label `specify`) → the agent drafts the spec; a deterministic step upserts it as
+   the issue's canonical comment. Re-running edits that same comment in place.
+2. **Approve** → read the comment, edit it inline if needed. Adding `claude-implement` is the
+   go-ahead (or `no-spec` to implement without a spec).
+3. **`plan`** (optional, label `plan`) → posts a deep-design comment that supersedes the spec's
+   light approach.
+4. **`claude-implement`** → the agent reads the spec comment, implements, and commits the code plus
+   `.specs/<n>.ref`, then opens a PR. **Fail-closed:** with no spec comment and no `no-spec` label,
+   it stops rather than silently building from the issue body.
+5. **Gates** on the PR → `review` · `pr-gate` · `spec-guard` · `ci`. **`spec-guard`** re-fetches the
+   pinned comment and re-hashes it: if someone edited the spec after the code was written, the hash
+   no longer matches and the PR goes red until it is reconciled.
 
 ## Runtime model (the key tricks)
 
 - **No engine token, ever:** the runner never checks out this engine repo, so `agent-loop` stays
-  **private** with no per-repo PAT. The phases check out the caller (for `CLAUDE.md`, `setup.env`)
-  and, since v0.5.0, the specs repo at `.specs-repo/` — never this one.
-- **Cross-repo auth (v0.5.0, new requirement):** the caller's default `GITHUB_TOKEN` is scoped to
-  the caller, so it cannot read or write the specs repo. Each phase mints a short-lived App
-  installation token covering *both* repos from `LOOP_APP_ID` + `LOOP_APP_PRIVATE_KEY`. Those must
-  be set **per repo** (org secrets aren't available to private repos on this plan). `specify`,
-  `plan`, `implement` and `spec-guard` fail loudly without them; `review` and `claude` degrade to
-  running without spec context. `preflight` verifies the whole chain — including that the minted
-  token can actually *write* to the specs repo — before you run a real phase.
-- **Templates moved out:** spec/plan/tasks templates now live in the specs repo under
-  `templates/`, so editing one is a PR there instead of an engine tag. The tradeoff: they are no
-  longer pinned to `@vX`.
+  **private** with no per-repo PAT. The phases check out only the caller (for `CLAUDE.md`,
+  `setup.env`, and the PR's `.specs/<n>.ref`).
+- **The spec is an issue comment; the pin is a content hash.** `.specs/<n>.ref` records
+  `source=issue-comment`, the `comment_id`, and `spec_sha256` — the hash of the comment body the
+  code was written against. `implement` and `spec-guard` use the *identical* hash pipeline
+  (`gh api …/comments/<id> --jq .body | tr -d '\r' | sha256sum`), so the pin reconciles exactly.
+- **Only `GITHUB_TOKEN`:** every phase acts on its own repo's issue/PR, so no App and no cross-repo
+  token. A welcome side effect: `spec-guard` is secret-free again and **works on fork PRs**.
+- **Templates are inlined** in the specify/plan prompts, so they are pinned with `@vX` and need no
+  separate repo or checkout.
 - **The stub grants the token ceiling:** a called reusable can't exceed the caller's permissions,
   so `stubs/loop.yml` sets top-level `permissions:` (contents/PR/issues/id-token write). Without
   it every write phase dies at **startup** on a read-only default token.
@@ -82,7 +96,9 @@ diagnosis.)
 
 ## Versioning & propagation
 
-- Engine released with **semver tags** (`v0.2.0`, `v0.3.0`, …).
+- Engine released with **semver tags** (`v0.2.0`, `v0.3.0`, …). The `@vX` pin **is** the migration
+  mechanism: `v0.5.x` = specs in a dedicated repo (ADR-0001), `v0.6.x` = specs as issue comments
+  (ADR-0002). No runtime fallback — a repo migrates by bumping its pin.
 - Projects pin `@vX` in their stub. **Renovate** ([`stubs/renovate.json`](stubs/renovate.json))
   opens a **bump PR** in each project on a new tag → you merge it (human gate preserved).
 
@@ -99,12 +115,13 @@ protection on `develop` to require:
 
 ## What stays central vs per-repo
 
-| Central — engine (here) | Central — specs repo | Per-repo (each project) |
-|---|---|---|
-| Reusable workflows (logic) | The specs themselves | Thin stub (`loop.yml`) |
-| Phase prompts | spec/plan/tasks templates | `CLAUDE.md`, `setup.env` |
-| Gate logic (pr-gate, spec-guard) | Spec PRs (the intent gate) | `.specs/<issue#>.ref` pins |
-| — | — | Labels, branch protection, secrets |
+| Central — engine (here) | Per-repo (each project) |
+|---|---|
+| Reusable workflows (logic) | Thin stub (`loop.yml`) |
+| Phase prompts + inlined templates | `CLAUDE.md`, `setup.env` |
+| Gate logic (pr-gate, spec-guard) | `.specs/<issue#>.ref` pins |
+| — | The spec comments live on the issues |
+| — | Labels, branch protection, the one secret |
 
 PR/issue templates can't be "reused" (GitHub reads them from the repo) — publish them as
 **org defaults** in `DMCSoftMX/.github`, or sync with Cruft/multi-gitter.

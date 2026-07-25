@@ -1,9 +1,11 @@
 name: Plan (reusable)
 
-# OPTIONAL deep-design escalation (SDD). Same shape as specify: reads the merged spec and writes
-# plan.md + tasks.md NEXT TO IT in the specs repo (ADR-0001) — they are documents, so they live
-# where the documents live. The `plan` label guard lives in the project stub. Templates come from
-# the specs repo (templates/plan.md, templates/tasks.md), not inlined here.
+# OPTIONAL deep-design escalation (SDD). Same shape as specify: the agent authors a design and a
+# deterministic step upserts it as the issue's canonical PLAN comment, marked `<!-- agent-plan:<n> -->`.
+# The `plan` label guard lives in the project stub.
+#
+# SINCE v0.6.0 (ADR-0002): plan is a comment on the issue, next to the spec comment — no dedicated
+# repo, no cross-repo token. `implement` reads both; the plan SUPERSEDES the spec's light approach.
 on:
   workflow_call:
     inputs:
@@ -11,19 +13,9 @@ on:
         description: Claude model for this phase.
         type: string
         default: sonnet
-      specs_repo:
-        description: The specs repo (system of record) that receives the plan PR.
-        type: string
-        default: DMCSoftMX/specs
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN:
         required: true
-      # See specify.yml: optional so the failure is a readable annotation, not a
-      # step-less `startup_failure`.
-      LOOP_APP_ID:
-        required: false
-      LOOP_APP_PRIVATE_KEY:
-        required: false
 
 jobs:
   plan:
@@ -31,131 +23,119 @@ jobs:
     timeout-minutes: 20
     permissions:
       contents: read
-      pull-requests: write
+      pull-requests: write   # claude-code-action expects it available on issue events
       issues: write
       id-token: write
     steps:
-      - name: Require the cross-repo App credentials
-        env:
-          APP_ID: ${{ secrets.LOOP_APP_ID }}
-          APP_KEY: ${{ secrets.LOOP_APP_PRIVATE_KEY }}
-        run: |
-          if [ -z "$APP_ID" ] || [ -z "$APP_KEY" ]; then
-            echo "::error::Since v0.5.0 the plan is written to ${{ inputs.specs_repo }}, which the default GITHUB_TOKEN cannot reach. Set LOOP_APP_ID and LOOP_APP_PRIVATE_KEY on this repo (SETUP.md, 'GitHub App')."
-            exit 1
-          fi
-
-      - name: Resolve the specs repo name
-        id: specs
-        env:
-          SPECS_REPO: ${{ inputs.specs_repo }}
-        run: printf 'name=%s\n' "${SPECS_REPO#*/}" >> "$GITHUB_OUTPUT"
-
-      - name: Mint cross-repo token
-        id: token
-        uses: actions/create-github-app-token@v1
-        with:
-          app-id: ${{ secrets.LOOP_APP_ID }}
-          private-key: ${{ secrets.LOOP_APP_PRIVATE_KEY }}
-          owner: ${{ github.repository_owner }}
-          repositories: |
-            ${{ github.event.repository.name }}
-            ${{ steps.specs.outputs.name }}
-
-      - uses: actions/checkout@v4          # caller repo (CLAUDE.md, the code being designed for)
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 1
 
-      - uses: actions/checkout@v4          # specs repo (spec.md in, plan.md + tasks.md out)
-        with:
-          repository: ${{ inputs.specs_repo }}
-          path: .specs-repo
-          token: ${{ steps.token.outputs.token }}
-          fetch-depth: 0
-
-      # Keep the specs checkout out of the caller's working tree (nested git repo).
-      - name: Keep the specs checkout out of the code repo
-        run: printf '/.specs-repo/\n' >> .git/info/exclude
-
-      # As in specify.yml: the agent AUTHORS the two files; it does NOT run git or gh (the action's
-      # git sandbox blocks cross-repo branch/PR in an unattended run). The shell step publishes.
-      - uses: anthropics/claude-code-action@v1
-        with:
-          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          github_token: ${{ steps.token.outputs.token }}
-          track_progress: "true"
-          prompt: |
-            You are a DEEP PLAN agent (optional escalation for heavy work). Turn an approved spec
-            into a full technical design that supersedes its lightweight "Approach & tasks". Do
-            NOT write product code.
-
-            The specs repo is checked out at `.specs-repo/` (remote: ${{ inputs.specs_repo }},
-            branch main). This repo's own code is checked out at the root — read it for context,
-            but do NOT modify anything in it.
-
-            Your deliverable is two files on disk. Do NOT run any `git` or `gh` commands and do NOT
-            open a PR — an automated step after you publishes them.
-
-            1. Find the spec dir for this issue:
-               `.specs-repo/specs/${{ github.event.repository.name }}/${{ github.event.issue.number }}-*/`
-               Read its `spec.md` (source of truth) and CLAUDE.md (root of this repo). If no
-               `spec.md` exists, STOP: write nothing, and say in your progress notes that `specify`
-               must run and its PR be merged first.
-            2. Read `.specs-repo/templates/plan.md` and `.specs-repo/templates/tasks.md`. Author
-               `plan.md` and `tasks.md` in that SAME spec dir using those templates exactly: keep
-               every heading, replace every `<<...>>`. Set Refs to
-               `${{ github.repository }}#${{ github.event.issue.number }}`.
-               The plan must be CONCRETE: real affected files, contracts/interfaces/data shapes,
-               risks+mitigations, and a test strategy mapping each acceptance criterion to how it
-               will be proven (flag what CI can't verify). `tasks.md` is an ordered checklist of
-               discrete, individually verifiable tasks.
-            3. Do NOT restate the spec; design against it. Do NOT change `spec.md` — changing it
-               would move its sha and turn every open code PR red. If it is wrong or ambiguous, say
-               so in your progress notes and leave the open question.
-          claude_args: |
-            --model ${{ inputs.model }}
-
-      # --- deterministic publish: branch + commit + push + PR in the specs repo ----------------
-      - name: Publish the plan as a PR
-        id: publish
-        working-directory: .specs-repo
+      # Require an existing spec comment: plan escalates a spec, it doesn't replace specify.
+      - name: Require an approved spec comment
         env:
-          GH_TOKEN: ${{ steps.token.outputs.token }}
-          SPECS_REPO: ${{ inputs.specs_repo }}
-          CALLER: ${{ github.repository }}
-          REPO_NAME: ${{ github.event.repository.name }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
           ISSUE: ${{ github.event.issue.number }}
         run: |
           set -euo pipefail
-          git config user.name  "dmcsoftmx-agent-loop[bot]"
-          git config user.email "308612457+dmcsoftmx-agent-loop[bot]@users.noreply.github.com"
-
-          DIR=$(ls -d "specs/${REPO_NAME}/${ISSUE}-"*/ 2>/dev/null | head -n1 || true)
-          if [ -z "$DIR" ] || [ ! -f "${DIR}plan.md" ]; then
-            echo "::error::plan produced no plan.md under specs/${REPO_NAME}/${ISSUE}-*/. Most likely there is no merged spec to escalate — see the agent's progress comment."
+          MARKER="<!-- agent-spec:${ISSUE} -->"
+          CID=$(MARKER="$MARKER" gh api "repos/${REPO}/issues/${ISSUE}/comments" --paginate \
+                  --jq '[.[] | select(.body | contains(env.MARKER)) | .id] | last // empty')
+          if [ -z "$CID" ]; then
+            echo "::error::Issue #${ISSUE} has no spec comment to escalate. Run \`specify\` first, then \`plan\`."
             exit 1
           fi
-          DIR="${DIR%/}"
-          SLUG=$(basename "$DIR")
-          BRANCH="plan/${REPO_NAME}-${SLUG}"
+          # Hand the spec to the agent as read-only context.
+          gh api "repos/${REPO}/issues/comments/${CID}" --jq '.body' > "$RUNNER_TEMP/spec.md"
+          echo "Spec comment ${CID} available at \$RUNNER_TEMP/spec.md"
 
-          git switch -c "$BRANCH"
-          git add "${DIR}/plan.md" "${DIR}/tasks.md"
-          git commit -m "plan: ${SLUG} (${REPO_NAME}#${ISSUE})"
-          git push -u origin "$BRANCH"
+      # The agent AUTHORS the plan to a file; the step below upserts it as the plan comment.
+      - uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ github.token }}
+          track_progress: "true"
+          prompt: |
+            You are a DEEP PLAN agent (optional escalation for heavy work). Turn the approved spec
+            into a full technical design that supersedes its lightweight "Approach & tasks". Do NOT
+            write product code.
 
-          URL=$(gh pr create --repo "$SPECS_REPO" --base main --head "$BRANCH" \
-                  --title "plan: ${SLUG} (${REPO_NAME}#${ISSUE})" \
-                  --body "Refs ${CALLER}#${ISSUE}")
-          echo "url=$URL" >> "$GITHUB_OUTPUT"
-          echo "Plan PR: $URL"
+            The approved spec is at `${{ runner.temp }}/spec.md` (read-only context). Read it and
+            `CLAUDE.md` (repo root) for conventions and the code being designed for.
 
-      - name: Link the plan PR on the issue
+            Your ONE deliverable is a single file on disk: `PLAN_DRAFT.md` at the repo root. Do NOT
+            run any `git` or `gh` commands and do NOT post any comment yourself — an automated step
+            after you publishes it as the issue's plan comment. Fill the template below: keep every
+            heading, replace every `<<...>>`, drop the `<!-- -->` comments.
+
+            The plan must be CONCRETE: real affected files, contracts / interfaces / data shapes,
+            risks + mitigations, and a test strategy mapping each acceptance criterion to how it will
+            be proven (flag what CI can't verify). Do NOT restate the spec; design against it. If the
+            spec is wrong or ambiguous, say so under "Open questions" rather than guessing.
+
+            ----- plan template (fill and write to PLAN_DRAFT.md) -----
+            # Plan: <<title>>
+
+            > **Refs:** ${{ github.repository }}#${{ github.event.issue.number }} · supersedes the spec's "Approach & tasks".
+
+            ## Design
+
+            <<El enfoque técnico concreto: qué cambia y por qué. Archivos/módulos afectados.>>
+
+            ## Contracts & data shapes
+
+            <<Interfaces, tipos, endpoints, esquemas — lo que otro código consume o produce.>>
+
+            ## Risks & mitigations
+
+            - <<riesgo → mitigación>>
+
+            ## Test strategy
+
+            <<Cada criterio de aceptación → cómo se prueba. Marca lo que CI no puede verificar.>>
+
+            ## Tasks
+
+            <!-- Checklist ordenado de tareas discretas e individualmente verificables. -->
+            - [ ] <<tarea 1>>
+            - [ ] <<tarea 2>>
+
+            ## Open questions
+
+            - <<lo que necesita decisión humana>>
+          claude_args: |
+            --model ${{ inputs.model }}
+            --allowedTools Write
+
+      - name: Post or update the plan comment
         env:
           GH_TOKEN: ${{ github.token }}
-          URL: ${{ steps.publish.outputs.url }}
+          REPO: ${{ github.repository }}
+          ISSUE: ${{ github.event.issue.number }}
         run: |
-          gh issue comment "${{ github.event.issue.number }}" --repo "${{ github.repository }}" \
-            --body "🧭 Plan drafted → ${URL}
+          set -euo pipefail
+          if [ ! -s PLAN_DRAFT.md ]; then
+            echo "::error::plan produced no PLAN_DRAFT.md. See the agent's progress comment on issue #${ISSUE}."
+            exit 1
+          fi
 
-          Merge it to lock the design, then add \`claude-implement\`."
+          MARKER="<!-- agent-plan:${ISSUE} -->"
+          BODY_FILE="$RUNNER_TEMP/plan_comment.md"
+          {
+            printf '%s\n' "$MARKER"
+            printf '> 🧭 **Plan** — supersede el enfoque ligero del spec. Editable aquí; añade `claude-implement` para construir.\n\n'
+            cat PLAN_DRAFT.md
+          } > "$BODY_FILE"
+
+          CID=$(MARKER="$MARKER" gh api "repos/${REPO}/issues/${ISSUE}/comments" --paginate \
+                  --jq '[.[] | select(.body | contains(env.MARKER)) | .id] | last // empty')
+          if [ -n "$CID" ]; then
+            jq -n --rawfile b "$BODY_FILE" '{body:$b}' \
+              | gh api --method PATCH "repos/${REPO}/issues/comments/${CID}" --input - >/dev/null
+            echo "Updated plan comment ${CID} on issue #${ISSUE}."
+          else
+            jq -n --rawfile b "$BODY_FILE" '{body:$b}' \
+              | gh api --method POST "repos/${REPO}/issues/${ISSUE}/comments" --input - >/dev/null
+            echo "Posted plan comment on issue #${ISSUE}."
+          fi

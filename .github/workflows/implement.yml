@@ -1,32 +1,22 @@
 name: Implement (reusable)
 
-# The agent implements against the spec and opens a PR. Reads the caller's setup.env for the
-# stack + self-verify commands (installs deps, self-verifies before the PR). The
-# `claude-implement` label guard lives in the project stub.
+# The agent implements against the spec and opens a PR. Reads the caller's setup.env for the stack
+# + self-verify commands (installs deps, self-verifies before the PR). The `claude-implement` label
+# guard lives in the project stub.
 #
-# SINCE v0.5.0 (ADR-0001): the spec lives in the dedicated specs repo, so this phase READS it
-# cross-repo (a private repo needs a token even to read) and pins the exact spec commit it worked
-# against into `.specs/<issue#>.ref` in the code repo. That pin — not the path, which is
-# derivable — is what lets `spec-guard` detect drift later.
+# SINCE v0.6.0 (ADR-0002): the spec is a CANONICAL COMMENT on the issue, marked `<!-- agent-spec:<n> -->`.
+# A deterministic step resolves it, hands it to the agent read-only, and writes the pin
+# `.specs/<n>.ref` — a CONTENT HASH of the comment (not a git sha). `spec-guard` re-fetches the
+# comment and re-hashes to detect drift. All in THIS repo with GITHUB_TOKEN — no App, no cross-repo.
 on:
   workflow_call:
     inputs:
       model:
         type: string
         default: sonnet
-      specs_repo:
-        description: The specs repo (system of record) the spec is read from.
-        type: string
-        default: DMCSoftMX/specs
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN:
         required: true
-      # See specify.yml: optional here so the failure is a readable annotation, not a
-      # step-less `startup_failure`.
-      LOOP_APP_ID:
-        required: false
-      LOOP_APP_PRIVATE_KEY:
-        required: false
 
 jobs:
   implement:
@@ -38,89 +28,70 @@ jobs:
       issues: write
       id-token: write
     steps:
-      - name: Require the cross-repo App credentials
-        env:
-          APP_ID: ${{ secrets.LOOP_APP_ID }}
-          APP_KEY: ${{ secrets.LOOP_APP_PRIVATE_KEY }}
-        run: |
-          if [ -z "$APP_ID" ] || [ -z "$APP_KEY" ]; then
-            echo "::error::Since v0.5.0 the spec is read from ${{ inputs.specs_repo }}, which the default GITHUB_TOKEN cannot reach. Set LOOP_APP_ID and LOOP_APP_PRIVATE_KEY on this repo (SETUP.md, 'GitHub App')."
-            exit 1
-          fi
-
-      - name: Resolve the specs repo name
-        id: specs
-        env:
-          SPECS_REPO: ${{ inputs.specs_repo }}
-        run: printf 'name=%s\n' "${SPECS_REPO#*/}" >> "$GITHUB_OUTPUT"
-
-      - name: Mint cross-repo token
-        id: token
-        uses: actions/create-github-app-token@v1
-        with:
-          app-id: ${{ secrets.LOOP_APP_ID }}
-          private-key: ${{ secrets.LOOP_APP_PRIVATE_KEY }}
-          owner: ${{ github.repository_owner }}
-          repositories: |
-            ${{ github.event.repository.name }}
-            ${{ steps.specs.outputs.name }}
-
       - uses: actions/checkout@v4
         with:
           fetch-depth: 1
 
-      # Read-only companion checkout. `fetch-depth: 0` because we need the file's commit history
-      # to pin a sha.
-      - uses: actions/checkout@v4
-        with:
-          repository: ${{ inputs.specs_repo }}
-          path: .specs-repo
-          token: ${{ steps.token.outputs.token }}
-          fetch-depth: 0
-
-      # `.specs-repo/` sits inside the caller's working tree; without this the agent's `git add`
-      # would drag it in as a gitlink. Local-only, so it never dirties the repo.
-      - name: Keep the specs checkout out of the code repo
-        run: printf '/.specs-repo/\n' >> .git/info/exclude
-
-      # Deterministic, so the agent can't get it wrong: locate the spec for this issue and write
-      # the pin file itself. The agent only has to commit it.
-      - name: Locate the spec and write the pin
+      # Deterministic: resolve the spec comment, write the pin, hand the spec to the agent. The pin
+      # is a CONTENT HASH so spec-guard can reconcile against the live comment later.
+      - name: Resolve the spec comment and write the pin
         id: spec
         env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
           ISSUE: ${{ github.event.issue.number }}
-          REPO_NAME: ${{ github.event.repository.name }}
-          SPECS_REPO: ${{ inputs.specs_repo }}
         run: |
           set -euo pipefail
-          DIR=$(ls -d ".specs-repo/specs/${REPO_NAME}/${ISSUE}-"* 2>/dev/null | head -n1 || true)
-          if [ -z "$DIR" ] || [ ! -f "$DIR/spec.md" ]; then
-            echo "::notice::No approved spec for issue #${ISSUE} in ${SPECS_REPO}. Implementing from the issue body."
-            {
-              printf 'found=false\n'
-              printf 'local=(no spec)\n'
-              printf 'rel=(no spec)\n'
-              printf 'ref=(no pin)\n'
-            } >> "$GITHUB_OUTPUT"
+          MARKER="<!-- agent-spec:${ISSUE} -->"
+
+          LABELS=$(gh api "repos/${REPO}/issues/${ISSUE}" --jq '[.labels[].name] | join(",")')
+
+          # Fail-closed (retro #4): a spec-driven issue with no approved spec must NOT silently fall
+          # back to the issue body. The only opt-out is the explicit `no-spec` label.
+          if printf '%s' ",$LABELS," | grep -q ',no-spec,'; then
+            echo "::notice::'no-spec' label present — implementing from the issue body, no pin."
+            printf 'found=false\n' >> "$GITHUB_OUTPUT"
+            printf 'has_plan=false\n' >> "$GITHUB_OUTPUT"
+            printf 'ref=(no pin)\n' >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
-          REL="${DIR#.specs-repo/}/spec.md"
-          SHA=$(git -C .specs-repo log -1 --format=%H -- "$REL")
+          CID=$(MARKER="$MARKER" gh api "repos/${REPO}/issues/${ISSUE}/comments" --paginate \
+                  --jq '[.[] | select(.body | contains(env.MARKER)) | .id] | last // empty')
+          if [ -z "$CID" ]; then
+            echo "::error::No spec comment on issue #${ISSUE}. Run \`specify\` first (label 'specify') and review it, or add the 'no-spec' label to implement without a spec."
+            exit 1
+          fi
+
+          # Fetch the comment body ONCE and hash it. This pipeline (jq .body | tr -d CR | sha256sum)
+          # MUST be byte-for-byte identical to spec-guard's, or the pin will never reconcile.
+          gh api "repos/${REPO}/issues/comments/${CID}" --jq '.body' > "$RUNNER_TEMP/spec.md"
+          HASH=$(tr -d '\r' < "$RUNNER_TEMP/spec.md" | sha256sum | cut -d' ' -f1)
 
           mkdir -p .specs
           {
-            printf 'repo=%s\n'  "$SPECS_REPO"
-            printf 'path=%s\n'  "$REL"
-            printf 'issue=%s\n' "$ISSUE"
-            printf 'sha=%s\n'   "$SHA"
+            printf 'source=issue-comment\n'
+            printf 'issue=%s\n'       "$ISSUE"
+            printf 'comment_id=%s\n'  "$CID"
+            printf 'spec_sha256=%s\n' "$HASH"
+            printf 'captured=%s\n'    "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           } > ".specs/${ISSUE}.ref"
 
-          echo "Spec: $REL @ $SHA"
+          echo "Spec comment ${CID} @ sha256:${HASH}"
           printf 'found=true\n'                 >> "$GITHUB_OUTPUT"
-          printf 'local=%s\n' "$DIR/spec.md"    >> "$GITHUB_OUTPUT"
-          printf 'rel=%s\n'   "$REL"            >> "$GITHUB_OUTPUT"
           printf 'ref=.specs/%s.ref\n' "$ISSUE" >> "$GITHUB_OUTPUT"
+
+          # Optional deep plan, if `plan` ran. It supersedes the spec's light approach.
+          PMARKER="<!-- agent-plan:${ISSUE} -->"
+          PID=$(MARKER="$PMARKER" gh api "repos/${REPO}/issues/${ISSUE}/comments" --paginate \
+                  --jq '[.[] | select(.body | contains(env.MARKER)) | .id] | last // empty')
+          if [ -n "$PID" ]; then
+            gh api "repos/${REPO}/issues/comments/${PID}" --jq '.body' > "$RUNNER_TEMP/plan.md"
+            printf 'has_plan=true\n' >> "$GITHUB_OUTPUT"
+            echo "Plan comment ${PID} available."
+          else
+            printf 'has_plan=false\n' >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Load stack config from setup.env
         run: |
@@ -129,8 +100,8 @@ jobs:
             printf '%s=%s\n' "$v" "${!v}" >> "$GITHUB_ENV"
           done
           # The agent MUST be able to edit files, so always include the editing tools.
-          # `--allowedTools` sets the exact allowlist (read-only base aside), so passing only
-          # the verify commands would drop Write/Edit and the agent couldn't implement anything.
+          # `--allowedTools` sets the exact allowlist (read-only base aside), so passing only the
+          # verify commands would drop Write/Edit and the agent couldn't implement anything.
           BASE="Edit,Write,MultiEdit"
           if [ -n "$ALLOWED_VERIFY_TOOLS" ]; then
             printf 'AGENT_TOOLS=%s,%s\n' "$BASE" "$ALLOWED_VERIFY_TOOLS" >> "$GITHUB_ENV"
@@ -155,40 +126,35 @@ jobs:
 
       - uses: anthropics/claude-code-action@v1
         env:
-          GH_TOKEN: ${{ steps.token.outputs.token }}
+          GH_TOKEN: ${{ github.token }}
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          github_token: ${{ steps.token.outputs.token }}
+          github_token: ${{ github.token }}
           track_progress: "true"
           prompt: |
             Implement the issue that triggered this event (it was labeled `claude-implement`) and
             open a Pull Request.
 
             1. SOURCE OF TRUTH. Spec found for this issue: `${{ steps.spec.outputs.found }}`.
-               - If `true`: read `${{ steps.spec.outputs.local }}`. Its acceptance criteria are what
-                 your PR must meet and its "Approach & tasks" section is your guide. That file is
-                 in a READ-ONLY companion checkout of the specs repo — do NOT edit it, do NOT
-                 commit anything under `.specs-repo/`, and do NOT copy the spec into this repo.
-                 A `plan.md` / `tasks.md` next to it SUPERSEDES the spec's light approach.
-               - If `false`: there is no approved spec; fall back to the issue body and its
-                 acceptance criteria.
+               - If `true`: read `${{ runner.temp }}/spec.md` — the approved spec (a read-only copy
+                 of the issue's spec comment). Its acceptance criteria are what your PR must meet and
+                 its "Approach & tasks" is your guide. Deep plan present: `${{ steps.spec.outputs.has_plan }}`;
+                 if `true`, also read `${{ runner.temp }}/plan.md`, which SUPERSEDES the spec's light
+                 approach. Do NOT edit those files; they are context, not part of the repo.
+               - If `false`: there is no approved spec (the issue is `no-spec`); fall back to the
+                 issue body and its acceptance criteria.
             2. Follow the project conventions described in CLAUDE.md.
-            3. Dependencies are ALREADY installed on the runner. BEFORE opening the PR, verify
-               your change by running the project's lint, typecheck and test commands; if anything
-               fails, fix it and retry until it passes. Do NOT run the build (slow; CI validates
-               it). If something is still red, open the PR anyway but state explicitly what is
-               failing and why.
+            3. Dependencies are ALREADY installed on the runner. BEFORE opening the PR, verify your
+               change by running the project's lint / typecheck / test commands; if anything fails,
+               fix it and retry until it passes. Do NOT run the build (slow; CI validates it). If
+               something is still red, open the PR anyway but state explicitly what is failing.
             4. Create a branch and commit your code. If a spec was found, the pin file
-               `${{ steps.spec.outputs.ref }}` has already been written for you — `git add` it and
-               include it in the SAME commit as the code. It records the exact spec commit you
-               worked against; `spec-guard` fails the PR without it.
-            5. Open the PR against `develop` (the integration branch, NOT main) whose body includes
-               `Fixes #${{ github.event.issue.number }}` and, when a spec was found, a link to it:
-               `https://github.com/${{ inputs.specs_repo }}/blob/main/${{ steps.spec.outputs.rel }}`
-
-            Note on the task checklist: the spec now lives in another repo, so you can no longer
-            tick its boxes from here. Instead, summarize in the PR body which "Approach & tasks"
-            items you completed and which you did not.
+               `${{ steps.spec.outputs.ref }}` has ALREADY been written for you — `git add` it and
+               include it in the SAME commit as the code. It records the exact spec-comment version
+               you worked against; `spec-guard` fails the PR without it.
+            5. Open the PR against `develop` (the integration branch, NOT main). Its body MUST include
+               `Fixes #${{ github.event.issue.number }}`. Summarize which "Approach & tasks" items you
+               completed and which you did not.
           claude_args: |
             --model ${{ inputs.model }}
             --allowedTools ${{ env.AGENT_TOOLS }}
