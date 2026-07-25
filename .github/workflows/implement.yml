@@ -176,7 +176,7 @@ jobs:
             denials=$(grep -oE '"permission_denials_count"[[:space:]]*:[[:space:]]*[0-9]+' "$f" | grep -oE '[0-9]+' | tail -n1 || true)
           fi
           [ -n "${denials:-}" ] || denials=0
+          # Report the count (diagnostic), don't scream: agents routinely probe Bash/gh/CI tools they
+          # aren't granted, so a per-run warning would cry wolf. The artifact assertions above are the
+          # real guard. A high or rising count here is a hint the agent is fighting its sandbox.
           echo "- permission_denials_count: **${denials}**" >> "$GITHUB_STEP_SUMMARY"
-          if [ "${denials}" -gt 0 ] 2>/dev/null; then
-            echo "::warning::implement hit ${denials} permission denial(s) — it may have skipped an intended action. Check the run and the PR diff."
-          fi

@@ -156,7 +156,6 @@ jobs:
             denials=$(grep -oE '"permission_denials_count"[[:space:]]*:[[:space:]]*[0-9]+' "$f" | grep -oE '[0-9]+' | tail -n1 || true)
           fi
           [ -n "${denials:-}" ] || denials=0
+          # Report the count (diagnostic), don't scream: agents routinely probe tools they aren't
+          # granted. The PLAN_DRAFT.md assertion above is the real guard.
           echo "- permission_denials_count: **${denials}**" >> "$GITHUB_STEP_SUMMARY"
-          if [ "${denials}" -gt 0 ] 2>/dev/null; then
-            echo "::warning::plan hit ${denials} permission denial(s) — the plan draft may be incomplete. Check the run."
-          fi

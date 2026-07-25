@@ -143,15 +143,13 @@ jobs:
           else verdict=NONE
           fi
 
+          # The count is diagnostic, not an alarm: the agent routinely probes Bash/gh/CI tools it
+          # isn't granted (and still posts fine). The verdict assertion below is the real guard.
           {
             echo "## Review"
             echo "- verdict: **${verdict}**"
             echo "- permission_denials_count: **${denials}**"
           } >> "$GITHUB_STEP_SUMMARY"
-
-          if [ "${denials}" -gt 0 ] 2>/dev/null; then
-            echo "::warning::review hit ${denials} permission denial(s) — it may not have posted. Check github_token / pull-requests:write / allowedTools."
-          fi
 
           # Assertion (retro #3): no verdict line ⇒ the agent produced no real review (gave up or was
           # blocked). Fail, instead of the old silent green.
