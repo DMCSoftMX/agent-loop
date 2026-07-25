@@ -52,10 +52,37 @@ jobs:
             printf 'found=false\n' >> "$GITHUB_OUTPUT"
           fi
 
+      # claude-code-action refuses to review a PR that modifies workflow files (prompt-injection
+      # guard) — such a run yields no verdict. Detect it up front so the Verdict step can skip it
+      # cleanly (honest grey/notice) instead of red-flagging a legitimate Renovate/stub-bump PR.
+      - name: Does this PR touch workflow files?
+        id: guard
+        env:
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -uo pipefail
+          files=$(gh api "repos/$REPO/pulls/$PR/files" --paginate --jq '.[].filename' 2>/dev/null || true)
+          if printf '%s\n' "$files" | grep -qE '(^|/)\.github/workflows/'; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::PR modifies workflow files — automated review skipped (prompt-injection guard). Review by hand."
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # `github_token` + `track_progress` are what make the review actually POST (retro #2): without
+      # them the agent was denied the comment tools and reported green in silence. `continue-on-error`
+      # hands the pass/fail decision to the deterministic Verdict step below, which is the authority.
       - uses: anthropics/claude-code-action@v1
+        id: claude
+        if: steps.guard.outputs.skip != 'true'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          use_sticky_comment: "true"
+          github_token: ${{ github.token }}
+          track_progress: "true"
           prompt: |
             Review this pull request. PRIMARY goal: verify it RESOLVES the issue it links
             (`Fixes #N` / `Closes #N`).
@@ -77,3 +104,66 @@ jobs:
             `REVIEW-VERDICT: PASS`. Do not omit it or add text after it.
           claude_args: |
             --model ${{ inputs.model }}
+
+      # Deterministic authority over the review's pass/fail (retro #2 + #3). A green review must mean
+      # the agent actually reviewed and reached a verdict — not that it gave up in silence.
+      - name: Verdict — assert the review ran, surface denials, act on BLOCK
+        if: always()
+        env:
+          EXEC: ${{ steps.claude.outputs.execution_file }}
+          SKIP: ${{ steps.guard.outputs.skip }}
+        run: |
+          set -uo pipefail
+          if [ "${SKIP:-false}" = "true" ]; then
+            {
+              echo "## Review"
+              echo "- **skipped** — PR modifies workflow files; the review agent is disabled here by the prompt-injection guard. Review these changes by hand."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::notice::review skipped (PR touches .github/workflows/) — review by hand."
+            exit 0
+          fi
+          f="${EXEC:-/home/runner/work/_temp/claude-execution-output.json}"
+          if [ ! -f "$f" ]; then
+            echo "::error::review produced no execution output ($f missing) — the agent did not run. Failing so 'green' can't mean 'silent'."
+            exit 1
+          fi
+
+          # permission_denials_count: nonzero means the agent tried to act (e.g. post its review) and
+          # was blocked — the exact failure mode that used to make this phase green-but-silent.
+          denials=$(jq -r '[.. | objects | .permission_denials_count? // empty] | last // empty' "$f" 2>/dev/null || true)
+          if [ -z "${denials:-}" ]; then
+            denials=$(grep -oE '"permission_denials_count"[[:space:]]*:[[:space:]]*[0-9]+' "$f" | grep -oE '[0-9]+' | tail -n1 || true)
+          fi
+          [ -n "${denials:-}" ] || denials=0
+
+          # The machine-readable verdict the prompt REQUIRES. Grep the raw file: the token is plain
+          # ASCII with no JSON-escapable chars, so it survives serialization intact.
+          if grep -qE 'REVIEW-VERDICT:[[:space:]]*BLOCK' "$f"; then verdict=BLOCK
+          elif grep -qE 'REVIEW-VERDICT:[[:space:]]*PASS' "$f"; then verdict=PASS
+          else verdict=NONE
+          fi
+
+          {
+            echo "## Review"
+            echo "- verdict: **${verdict}**"
+            echo "- permission_denials_count: **${denials}**"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "${denials}" -gt 0 ] 2>/dev/null; then
+            echo "::warning::review hit ${denials} permission denial(s) — it may not have posted. Check github_token / pull-requests:write / allowedTools."
+          fi
+
+          # Assertion (retro #3): no verdict line ⇒ the agent produced no real review (gave up or was
+          # blocked). Fail, instead of the old silent green.
+          if [ "$verdict" = "NONE" ]; then
+            echo "::error::review posted no REVIEW-VERDICT line — no real review was produced. See the PR's review comment (or the lack of one)."
+            exit 1
+          fi
+
+          # The verdict must DO something (retro #2). BLOCK ⇒ red check. On a Free/unprotected repo that
+          # red is advisory — branch protection can't enforce it; `preflight` reports which world you're in.
+          if [ "$verdict" = "BLOCK" ]; then
+            echo "::error::REVIEW-VERDICT: BLOCK — the automated review found a blocking issue. See its comment on the PR."
+            exit 1
+          fi
+          echo "REVIEW-VERDICT: PASS — no blocking issues from the automated review."

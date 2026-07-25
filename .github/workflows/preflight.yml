@@ -32,6 +32,8 @@ jobs:
       pull-requests: write
       issues: write
       id-token: write
+      administration: read   # read branch protection to report enforcement (retro #6); optional —
+                             # if the stub doesn't grant it, the report degrades to "unknown/advisory"
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
@@ -89,6 +91,48 @@ jobs:
         run: |
           def=$(gh api "repos/${{ github.repository }}" -q .default_branch)
           [ "$def" = "develop" ] || echo "::warning::default branch is '$def', expected 'develop' (issue triggers read from the default branch)"
+
+      # ---- enforcement level: do the gates actually BLOCK a merge? (retro #6) --
+      # "Gated PR" implies the gates stop a bad merge. They only do so if the branch is protected AND
+      # admins can't bypass. On a private Free repo the protection API 403s ("Upgrade to Pro"), so the
+      # gates are ADVISORY — they report but nothing blocks. Tell the owner which world they're in
+      # instead of letting the loop over-promise. Best-effort: needs `administration: read` in the
+      # stub; if the token can't read protection we say "unknown", never guess "enforcing".
+      - name: Gate enforcement level (advisory vs enforcing)
+        run: |
+          set -uo pipefail
+          repo="${{ github.repository }}"
+          echo "## Gate enforcement" >> "$GITHUB_STEP_SUMMARY"
+          for br in develop main; do
+            if ! gh api "repos/$repo/branches/$br" >/dev/null 2>"$RUNNER_TEMP/e"; then
+              echo "- \`$br\`: branch not found — skipped." >> "$GITHUB_STEP_SUMMARY"
+              continue
+            fi
+            if prot=$(gh api "repos/$repo/branches/$br/protection" 2>"$RUNNER_TEMP/e"); then
+              admins=$(printf '%s' "$prot" | jq -r '.enforce_admins.enabled // false')
+              nchecks=$(printf '%s' "$prot" | jq -r '(.required_status_checks.contexts // []) | length')
+              revs=$(printf '%s' "$prot" | jq -r '.required_pull_request_reviews.required_approving_review_count // 0')
+              if [ "$admins" = "true" ]; then
+                echo "- \`$br\`: **protected & enforcing** — ${nchecks} required check(s), ${revs} review(s), admins included." >> "$GITHUB_STEP_SUMMARY"
+              else
+                echo "- \`$br\`: **protected, admins bypass** — ${nchecks} required check(s), ${revs} review(s); an \`--admin\` merge skips them." >> "$GITHUB_STEP_SUMMARY"
+                echo "::warning::branch '$br' is protected but admins bypass it — a solo maintainer's --admin merge skips every gate. Enforcement is effectively advisory."
+              fi
+            else
+              err=$(cat "$RUNNER_TEMP/e" 2>/dev/null || true)
+              if printf '%s' "$err" | grep -qi 'upgrade'; then
+                echo "- \`$br\`: **advisory only** — branch protection needs a paid plan on a private repo. Gates report but do NOT block the merge; the human is the gate." >> "$GITHUB_STEP_SUMMARY"
+                echo "::warning::branch '$br': gates are ADVISORY (protection needs a paid plan on a private repo). On this plan the human is the merge gate."
+              elif printf '%s' "$err" | grep -qi 'not protected'; then
+                echo "- \`$br\`: **advisory only** — no branch protection configured. Gates report but do NOT block the merge." >> "$GITHUB_STEP_SUMMARY"
+                echo "::warning::branch '$br' has no protection — gates are ADVISORY. Require ci / pr-gate / spec-guard on it to enforce."
+              else
+                echo "- \`$br\`: **unknown** — couldn't read protection (grant \`administration: read\` in the stub). Treat as advisory until confirmed." >> "$GITHUB_STEP_SUMMARY"
+                echo "::warning::branch '$br': can't read protection (add 'administration: read' to the stub permissions). Treat gates as advisory until confirmed."
+              fi
+            fi
+          done
+          echo "_A green loop is not an enforced loop unless the branch is protected and admins are included._" >> "$GITHUB_STEP_SUMMARY"
 
       # ---- the real ping: Claude App installed AND token valid --------------
       # Reproduces the OIDC -> token exchange with a trivial prompt so the two

@@ -40,6 +40,7 @@ jobs:
       # below posts it as the issue comment. Same author-vs-plumbing split the loop uses everywhere:
       # it keeps the agent out of the sandbox's gated git/gh and makes the outcome deterministic.
       - uses: anthropics/claude-code-action@v1
+        id: claude
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ github.token }}
@@ -158,4 +159,24 @@ jobs:
             jq -n --rawfile b "$BODY_FILE" '{body:$b}' \
               | gh api --method POST "repos/${REPO}/issues/${ISSUE}/comments" --input - >/dev/null
             echo "Posted spec comment on issue #${ISSUE}."
+          fi
+
+      # Surface permission_denials_count (retro #3). The comment-upsert above already fails hard if
+      # SPEC_DRAFT.md is missing; this just flags a partial run where the agent was blocked mid-draft.
+      - name: Surface permission denials
+        if: always()
+        env:
+          EXEC: ${{ steps.claude.outputs.execution_file }}
+        run: |
+          set -uo pipefail
+          f="${EXEC:-/home/runner/work/_temp/claude-execution-output.json}"
+          [ -f "$f" ] || exit 0
+          denials=$(jq -r '[.. | objects | .permission_denials_count? // empty] | last // empty' "$f" 2>/dev/null || true)
+          if [ -z "${denials:-}" ]; then
+            denials=$(grep -oE '"permission_denials_count"[[:space:]]*:[[:space:]]*[0-9]+' "$f" | grep -oE '[0-9]+' | tail -n1 || true)
+          fi
+          [ -n "${denials:-}" ] || denials=0
+          echo "- permission_denials_count: **${denials}**" >> "$GITHUB_STEP_SUMMARY"
+          if [ "${denials}" -gt 0 ] 2>/dev/null; then
+            echo "::warning::specify hit ${denials} permission denial(s) — the spec draft may be incomplete. Check the run."
           fi
