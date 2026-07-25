@@ -35,9 +35,6 @@ permissions:
   pull-requests: write
   issues: write
   id-token: write
-  administration: read      # lets `preflight` read branch protection and report whether the gates
-                            # actually ENFORCE or are only advisory (read-only; safe). Drop it and
-                            # preflight just reports "unknown" for enforcement.
 
 jobs:
   # Run ONCE per repo after setup (Actions -> "Agent loop" -> Run workflow) to
