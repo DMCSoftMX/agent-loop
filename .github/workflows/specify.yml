@@ -5,16 +5,12 @@ name: Specify (reusable)
 # (issues: labeled) and the label guard live in the STUB (see stubs/loop.yml); this file is pure
 # logic.
 #
-# SINCE v0.5.0 (ADR-0001): the spec is written to the DEDICATED SPECS REPO, not to the caller.
-# Two consequences worth knowing:
-#   * Cross-repo auth is REQUIRED. The caller's default GITHUB_TOKEN cannot touch another repo, so
-#     the stub must supply LOOP_APP_ID / LOOP_APP_PRIVATE_KEY and we mint an installation token
-#     scoped to [caller repo, specs]. No fallback: a repo without those secrets fails loudly here
-#     rather than silently writing specs to the wrong place. Repos migrate by bumping their pin.
-#   * The spec TEMPLATE now lives in the specs repo (templates/spec.md) instead of inlined below. It is
-#     read from the checkout, so editing the template no longer needs an engine tag — the tradeoff
-#     is that the template floats to latest instead of being pinned with @vX. For a reviewed
-#     document in a document repo, that's the right side of the trade.
+# SINCE v0.6.0 (ADR-0002): the spec is a CANONICAL COMMENT on the issue, not a file in a dedicated
+# repo. Everything happens in THIS repo with the default GITHUB_TOKEN — no App, no cross-repo token,
+# no cross-account tax. The agent authors the spec to a file; a deterministic step upserts it as the
+# issue comment marked `<!-- agent-spec:<n> -->` (re-running specify edits that same comment in place
+# instead of spamming). The spec template is inlined in the prompt (pinned with @vX, which for a
+# small reviewed artifact is the right side of the trade).
 on:
   workflow_call:
     inputs:
@@ -22,166 +18,144 @@ on:
         description: Claude model for this phase (per-repo override, optional).
         type: string
         default: sonnet
-      specs_repo:
-        description: The specs repo (system of record) that receives the spec PR.
-        type: string
-        default: DMCSoftMX/specs
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN:
         required: true
-      # Declared optional on purpose: a missing REQUIRED secret fails the job at `startup_failure`,
-      # with no log and no annotation — the exact opaque failure preflight exists to kill. The
-      # first step below turns it into a readable error instead.
-      LOOP_APP_ID:
-        required: false
-      LOOP_APP_PRIVATE_KEY:
-        required: false
 
 jobs:
   specify:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
-      contents: read         # the spec no longer lands here; only the specs repo is written
-      pull-requests: write
-      issues: write          # progress comment (track_progress) + the spec PR link
+      contents: read         # only reads CLAUDE.md for conventions
+      pull-requests: write   # claude-code-action expects it available on issue events
+      issues: write          # posts / updates the spec comment
       id-token: write
     steps:
-      - name: Require the cross-repo App credentials
-        env:
-          APP_ID: ${{ secrets.LOOP_APP_ID }}
-          APP_KEY: ${{ secrets.LOOP_APP_PRIVATE_KEY }}
-        run: |
-          if [ -z "$APP_ID" ] || [ -z "$APP_KEY" ]; then
-            echo "::error::Since v0.5.0 the spec is written to ${{ inputs.specs_repo }}, which the default GITHUB_TOKEN cannot reach. Set LOOP_APP_ID and LOOP_APP_PRIVATE_KEY on this repo (SETUP.md, 'GitHub App')."
-            exit 1
-          fi
-
-      # `repositories:` below wants bare names, but the input is `owner/repo` (what `gh --repo`
-      # needs). GitHub expressions have no split(), so strip the owner here.
-      - name: Resolve the specs repo name
-        id: specs
-        env:
-          SPECS_REPO: ${{ inputs.specs_repo }}
-        run: printf 'name=%s\n' "${SPECS_REPO#*/}" >> "$GITHUB_OUTPUT"
-
-      # One installation token covering BOTH repos: the caller (issue + CLAUDE.md) and the specs
-      # repo (where the spec PR is opened).
-      - name: Mint cross-repo token
-        id: token
-        uses: actions/create-github-app-token@v1
-        with:
-          app-id: ${{ secrets.LOOP_APP_ID }}
-          private-key: ${{ secrets.LOOP_APP_PRIVATE_KEY }}
-          owner: ${{ github.repository_owner }}
-          repositories: |
-            ${{ github.event.repository.name }}
-            ${{ steps.specs.outputs.name }}
-
-      # The CALLER repo — where CLAUDE.md and the issue live. Read-only for this phase.
       - uses: actions/checkout@v4
         with:
           fetch-depth: 1
 
-      # The SPECS repo — where the spec is authored and the PR is opened. `token` is persisted by
-      # checkout, so the agent's `git push` inside this directory just works.
-      - uses: actions/checkout@v4
-        with:
-          repository: ${{ inputs.specs_repo }}
-          path: .specs-repo
-          token: ${{ steps.token.outputs.token }}
-          fetch-depth: 0
-
-      # Keep the specs checkout from being swept into the caller's working tree (it is a nested
-      # git repo; a stray `git add -A` would otherwise pull it in as a gitlink). Local-only.
-      - name: Keep the specs checkout out of the code repo
-        run: printf '/.specs-repo/\n' >> .git/info/exclude
-
-      # The agent AUTHORS the spec file and nothing else. It does NOT run git or gh: claude-code-
-      # action runs the agent in a git sandbox scoped to its own (main) checkout, where branch
-      # creation and gh are gated behind approval that an unattended run doesn't have — so cross-
-      # repo branch+PR from inside the agent is structurally impossible. The deterministic shell
-      # steps below do the publishing (same split as implement.yml's pin file).
+      # The agent AUTHORS the spec to a file and nothing else — no git, no gh. A deterministic step
+      # below posts it as the issue comment. Same author-vs-plumbing split the loop uses everywhere:
+      # it keeps the agent out of the sandbox's gated git/gh and makes the outcome deterministic.
       - uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          github_token: ${{ steps.token.outputs.token }}
-          # REQUIRED for issue events: without this the agent runs but does NOT post progress.
+          github_token: ${{ github.token }}
           track_progress: "true"
           prompt: |
             You are a SPECIFY agent (SDD phase 1). Capture INTENT as a durable artifact.
             Do NOT design the solution and do NOT write product code.
 
-            The spec does NOT belong to this repo. It is authored in the specs repo, which is
-            already checked out at `.specs-repo/` (remote: ${{ inputs.specs_repo }}, branch main).
+            Your ONE deliverable is a single file on disk: `SPEC_DRAFT.md` at the repo root. Do NOT
+            run any `git` or `gh` commands and do NOT post any comment yourself — an automated step
+            after you publishes the file as the issue's spec comment. Just write the file.
 
-            Your ONE deliverable is a single file on disk. Do NOT run any `git` or `gh` commands
-            and do NOT try to open a PR — an automated step after you publishes the file. Just
-            write it:
-
-            1. Read the issue that triggered this event (it was labeled `specify`) and any
-               discussion in its comments. Read CLAUDE.md (root of THIS repo) for conventions.
-            2. Read `.specs-repo/templates/spec.md`. That is the spec template and it is authoritative:
-               keep every heading, replace every `<<...>>` placeholder with real content. Set
-               **Repo** to `${{ github.repository }}` and **Refs** to
+            1. Read the issue that triggered this event (it was labeled `specify`) and its comments.
+               Read `CLAUDE.md` (repo root) for the project's conventions.
+            2. Fill the template below: keep EVERY heading, replace EVERY `<<...>>` placeholder with
+               real content, and drop the `<!-- ... -->` guidance comments. Set **Repo** to
+               `${{ github.repository }}` and **Refs** to
                `${{ github.repository }}#${{ github.event.issue.number }}`.
-            3. Write the filled spec to EXACTLY this path (create the directories):
-               `.specs-repo/specs/${{ github.event.repository.name }}/${{ github.event.issue.number }}-<short-kebab-slug>/spec.md`
-               Pick a short kebab-case `<slug>` from the issue title. This `<repo>/<issue#>-<slug>`
-               layout is how `implement` and `spec-guard` find it later — do not invent another
-               path, and write NOTHING outside that one directory.
-            4. Keep "Approach & tasks" light: if it starts needing real architecture, new contracts
+            3. Keep "Approach & tasks" light. If it starts needing real architecture, new contracts
                or a data model, do NOT expand it — note under "Open questions" that this needs the
-               `plan` escalation. If the issue is already crisp the spec can be short, but it must
-               be an artifact.
+               `plan` escalation. A crisp issue can yield a short spec, but it must be an artifact.
+            4. Write the filled spec to EXACTLY `SPEC_DRAFT.md` (repo root) and nothing else.
+
+            ----- spec template (fill and write to SPEC_DRAFT.md) -----
+            # Spec: <<title>>
+
+            > **Repo:** ${{ github.repository }}  ·  **Refs:** ${{ github.repository }}#${{ github.event.issue.number }}  ·  **Status:** draft → approved (al añadir `claude-implement`)
+            > El QUÉ y el PORQUÉ, más un **CÓMO ligero**. Para trabajo pesado o transversal, escala el
+            > diseño a un `plan.md` con la etiqueta `plan` — si no, déjalo inline aquí abajo.
+
+            ## Problem / motivation
+
+            <<Qué necesidad o problema existe hoy, y por qué importa. 1–3 oraciones.>>
+
+            ## Goal
+
+            <<El resultado en una oración. Qué es verdad cuando esto está hecho.>>
+
+            ## Scope
+
+            **In:**
+            - <<qué cubre este trabajo>>
+
+            **Out (non-goals):**
+            - <<qué explícitamente NO cubre>>
+
+            ## User-visible behavior
+
+            <<Cómo lo observa un usuario / caller / consumidor. Antes → después.>>
+
+            ## Acceptance criteria
+
+            <!-- Específicos y VERIFICABLES: esto es contra lo que review compara el PR; lo que quede
+                 sin cubrir es BLOQUEANTE. Prefiere resultados observables sobre implementación. -->
+            - [ ] <<criterio 1>>
+            - [ ] <<criterio 2>>
+            - [ ] CI verde (según los comandos de setup.env)
+            - [ ] Respeta las convenciones de CLAUDE.md
+
+            ## Approach & tasks
+
+            <!-- CÓMO ligero: enfoque en unas líneas + un checklist corto. Si empieza a necesitar
+                 arquitectura real, contratos o un modelo de datos, PARA y escala a plan.md. -->
+            <<una o dos oraciones sobre el enfoque; nombra los archivos/áreas principales>>
+
+            - [ ] <<tarea 1>>
+            - [ ] <<tarea 2>>
+
+            ## Edge cases & risks
+
+            - <<caso borde / modo de falla / comportamiento que CI no puede verificar>>
+
+            ## Open questions
+
+            - <<lo que necesita una decisión humana antes o durante la implementación>>
           claude_args: |
             --model ${{ inputs.model }}
+            --allowedTools Write
 
-      # --- deterministic publish: branch + commit + push + PR in the specs repo ----------------
-      - name: Publish the spec as a PR
-        id: publish
-        working-directory: .specs-repo
+      # --- deterministic publish: upsert the spec as the issue's canonical comment ---------------
+      - name: Post or update the spec comment
         env:
-          GH_TOKEN: ${{ steps.token.outputs.token }}
-          SPECS_REPO: ${{ inputs.specs_repo }}
-          CALLER: ${{ github.repository }}
-          REPO_NAME: ${{ github.event.repository.name }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
           ISSUE: ${{ github.event.issue.number }}
         run: |
           set -euo pipefail
-          git config user.name  "dmcsoftmx-agent-loop[bot]"
-          git config user.email "308612457+dmcsoftmx-agent-loop[bot]@users.noreply.github.com"
 
-          DIR=$(ls -d "specs/${REPO_NAME}/${ISSUE}-"*/ 2>/dev/null | head -n1 || true)
-          if [ -z "$DIR" ] || [ ! -f "${DIR}spec.md" ]; then
-            echo "::error::specify produced no spec at specs/${REPO_NAME}/${ISSUE}-*/spec.md. See the agent's progress comment on the issue."
+          # Assertion (retro #2): a green run must mean the artifact exists. If specify produced
+          # nothing, fail loud instead of pretending it worked.
+          if [ ! -s SPEC_DRAFT.md ]; then
+            echo "::error::specify produced no SPEC_DRAFT.md. See the agent's progress comment on issue #${ISSUE}."
             exit 1
           fi
-          DIR="${DIR%/}"
-          SLUG=$(basename "$DIR")                                   # e.g. 5-contributing-guide
-          BRANCH="spec/${REPO_NAME}-${SLUG}"
-          TITLE=$(sed -n 's/^#\s*Spec:\s*//p' "${DIR}/spec.md" | head -n1)
-          [ -n "$TITLE" ] || TITLE="$SLUG"
 
-          git switch -c "$BRANCH"
-          git add "$DIR"
-          git commit -m "spec: ${TITLE} (${REPO_NAME}#${ISSUE})"
-          git push -u origin "$BRANCH"
+          MARKER="<!-- agent-spec:${ISSUE} -->"
 
-          # `Refs`, never `Fixes`/`Closes`: merging the spec must NOT close the issue, because that
-          # same issue is what triggers `implement` next.
-          URL=$(gh pr create --repo "$SPECS_REPO" --base main --head "$BRANCH" \
-                  --title "spec: ${TITLE} (${REPO_NAME}#${ISSUE})" \
-                  --body "Refs ${CALLER}#${ISSUE}")
-          echo "url=$URL" >> "$GITHUB_OUTPUT"
-          echo "Spec PR: $URL"
+          # Build the comment body: hidden marker (how implement/spec-guard find it) + a human note +
+          # the spec. This whole body is what the pin hashes, so keep the note stable.
+          BODY_FILE="$RUNNER_TEMP/spec_comment.md"
+          {
+            printf '%s\n' "$MARKER"
+            printf '> 📋 **Spec** — edítalo aquí mismo si hace falta; el hash del comentario es el pin. Para construir, añade la label `claude-implement` (o `no-spec` para implementar sin spec).\n\n'
+            cat SPEC_DRAFT.md
+          } > "$BODY_FILE"
 
-      - name: Link the spec PR on the issue
-        env:
-          GH_TOKEN: ${{ github.token }}
-          URL: ${{ steps.publish.outputs.url }}
-        run: |
-          gh issue comment "${{ github.event.issue.number }}" --repo "${{ github.repository }}" \
-            --body "📄 Spec drafted → ${URL}
+          # Find an existing spec comment (upsert). jq reads the marker from the environment.
+          CID=$(MARKER="$MARKER" gh api "repos/${REPO}/issues/${ISSUE}/comments" --paginate \
+                  --jq '[.[] | select(.body | contains(env.MARKER)) | .id] | last // empty')
 
-          Merging that PR **approves the intent**. After it's merged, add the \`claude-implement\` label here to build it."
+          if [ -n "$CID" ]; then
+            jq -n --rawfile b "$BODY_FILE" '{body:$b}' \
+              | gh api --method PATCH "repos/${REPO}/issues/comments/${CID}" --input - >/dev/null
+            echo "Updated spec comment ${CID} on issue #${ISSUE}."
+          else
+            jq -n --rawfile b "$BODY_FILE" '{body:$b}' \
+              | gh api --method POST "repos/${REPO}/issues/${ISSUE}/comments" --input - >/dev/null
+            echo "Posted spec comment on issue #${ISSUE}."
+          fi

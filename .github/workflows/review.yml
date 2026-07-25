@@ -3,26 +3,17 @@ name: Review (reusable)
 # Automatic PR review anchored to the spec. Read-only. Called by the stub on `pull_request`
 # (NOT pull_request_target → fork PRs never see the secret). Emits a machine-readable verdict.
 #
-# SINCE v0.5.0 (ADR-0001) the spec lives in the specs repo, so review reads it cross-repo. It
-# finds it through the PR's own pin (`.specs/<issue#>.ref`) rather than guessing a path — that is
-# the exact spec version the code was written against.
+# SINCE v0.6.0 (ADR-0002) the spec is an issue comment. Review finds it through the PR's own pin
+# (`.specs/<issue#>.ref` → comment_id) and fetches that comment for context — no App, no specs repo.
 on:
   workflow_call:
     inputs:
       model:
         type: string
         default: sonnet
-      specs_repo:
-        description: The specs repo (system of record) the review reads the spec from.
-        type: string
-        default: DMCSoftMX/specs
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN:
         required: true
-      LOOP_APP_ID:
-        required: false
-      LOOP_APP_PRIVATE_KEY:
-        required: false
 
 jobs:
   review:
@@ -31,42 +22,35 @@ jobs:
     permissions:
       contents: read
       pull-requests: write
-      issues: write
+      issues: read
       id-token: write
     env:
-      # The `secrets` context is not usable in a step-level `if:`, so hoist the test here.
-      HAS_APP: ${{ secrets.LOOP_APP_ID != '' && secrets.LOOP_APP_PRIVATE_KEY != '' }}
+      GH_TOKEN: ${{ github.token }}
     steps:
-      - name: Resolve the specs repo name
-        id: specs
-        env:
-          SPECS_REPO: ${{ inputs.specs_repo }}
-        run: printf 'name=%s\n' "${SPECS_REPO#*/}" >> "$GITHUB_OUTPUT"
-
-      # Best-effort: review still runs (against the issue body) if the specs repo is unreachable.
-      - name: Mint cross-repo token
-        id: token
-        if: env.HAS_APP == 'true'
-        continue-on-error: true
-        uses: actions/create-github-app-token@v1
-        with:
-          app-id: ${{ secrets.LOOP_APP_ID }}
-          private-key: ${{ secrets.LOOP_APP_PRIVATE_KEY }}
-          owner: ${{ github.repository_owner }}
-          repositories: ${{ steps.specs.outputs.name }}
-
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - uses: actions/checkout@v4
-        if: steps.token.outputs.token != ''
-        continue-on-error: true
-        with:
-          repository: ${{ inputs.specs_repo }}
-          path: .specs-repo
-          token: ${{ steps.token.outputs.token }}
-          fetch-depth: 1
+      # Best-effort: resolve the pinned spec comment into a file for the agent. If there is no pin
+      # (spec-less PR), the agent falls back to the linked issue body.
+      - name: Resolve the spec comment for context
+        id: spec
+        env:
+          BODY: ${{ github.event.pull_request.body }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          N=$(printf '%s' "$BODY" | grep -oiE '(fix(es|ed)?|close[sd]?|resolve[sd]?)[[:space:]]+#[0-9]+' | grep -oE '[0-9]+' | head -n1 || true)
+          REF=".specs/${N}.ref"
+          if [ -z "$N" ] || [ ! -f "$REF" ]; then
+            printf 'found=false\n' >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          CID=$(grep -m1 '^comment_id=' "$REF" | cut -d= -f2- || true)
+          if [ -n "$CID" ] && gh api "repos/${REPO}/issues/comments/${CID}" --jq '.body' > "$RUNNER_TEMP/spec.md" 2>/dev/null; then
+            printf 'found=true\n' >> "$GITHUB_OUTPUT"
+          else
+            printf 'found=false\n' >> "$GITHUB_OUTPUT"
+          fi
 
       - uses: anthropics/claude-code-action@v1
         with:
@@ -76,15 +60,13 @@ jobs:
             Review this pull request. PRIMARY goal: verify it RESOLVES the issue it links
             (`Fixes #N` / `Closes #N`).
 
-            To find the spec: read `.specs/<N>.ref` in this repo. It is a `key=value` file whose
-            `path` points into the specs repo, checked out read-only at `.specs-repo/`. So the
-            spec is at `.specs-repo/<path>`. If a `plan.md` / `tasks.md` sits next to it, flag
-            deviations from the plan and tasks that were not done. If there is no `.ref` file, or
-            `.specs-repo/` is absent, fall back to the issue body and its acceptance criteria.
+            Spec available for context: `${{ steps.spec.outputs.found }}`.
+            - If `true`: the approved spec is at `${{ runner.temp }}/spec.md` (the exact version the
+              code was pinned to). Its acceptance criteria are the CONTRACT — check the PR against
+              every one; anything left uncovered is BLOCKING.
+            - If `false`: fall back to the linked issue body and its acceptance criteria.
 
-            If the spec exists, its acceptance criteria are the CONTRACT — check the PR against
-            every one, and anything left uncovered is BLOCKING. Then review conventions (per
-            CLAUDE.md), bugs, edge cases and error handling.
+            Then review conventions (per CLAUDE.md), bugs, edge cases and error handling.
 
             You run in CI without a browser: do NOT treat runtime-dependent behavior as verified;
             ask for human verification. Be concise and distinguish BLOCKING from optional. If

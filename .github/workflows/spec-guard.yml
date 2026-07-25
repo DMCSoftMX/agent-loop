@@ -2,37 +2,20 @@ name: Spec Guard (reusable)
 
 # Anti-drift gate on PRs into develop.
 #
-# SINCE v0.5.0 (ADR-0001) THIS CHECK CHANGED MEANING. The spec no longer lives in the code repo,
-# so the guard can no longer see "the spec was edited in this PR" from the diff. What it checks
-# now is the PIN:
+# SINCE v0.6.0 (ADR-0002) the spec is a COMMENT on the issue, and the pin `.specs/<n>.ref` is a
+# CONTENT HASH of that comment (not a git sha). This guard:
 #
-#   1. If the issue has an approved spec, the PR must carry `.specs/<issue#>.ref` pinning it.
-#   2. The pinned sha must still be the head of that spec's path in the specs repo.
+#   1. If the linked issue has a spec comment, the PR must carry `.specs/<issue#>.ref` pinning it.
+#   2. Re-fetches the comment and re-hashes it; the hash must still match the pin.
 #
-# Rule 2 is what recovers reconciliation: if a human decides the spec was wrong and merges a spec
-# PR, the spec head moves, every open code PR pinned to the old sha goes red, and someone has to
-# look at the code again before merging. That is the same forcing function as before, just driven
-# by the specs repo instead of by the diff.
+# Rule 2 is the forcing function: if a human edits the spec comment after the code was written, the
+# hash changes, every open code PR pinned to the old hash goes red, and someone has to look at the
+# code again before merging.
 #
-# Known reduction in coverage, stated plainly: the old check also nagged when code changed and the
-# spec file was untouched. That proxy is gone — there is no spec file here to be untouched. The
-# `spec is still accurate` checkbox in the PR template is what covers that case now.
-#
-# Two operational costs of reading a private specs repo: this job is no longer secret-free, so it
-# no longer works on FORK PRs (`pull_request` withholds secrets from forks), and it needs the same
-# App credentials as the other phases.
+# Reads only the issue comment via the default GITHUB_TOKEN — no App, no cross-repo token. A welcome
+# side effect vs v0.5.x: this gate is secret-free again, so it WORKS ON FORK PRs (public repos).
 on:
-  workflow_call:
-    inputs:
-      specs_repo:
-        description: The specs repo (system of record) to reconcile against.
-        type: string
-        default: DMCSoftMX/specs
-    secrets:
-      LOOP_APP_ID:
-        required: false
-      LOOP_APP_PRIVATE_KEY:
-        required: false
+  workflow_call: {}
 
 jobs:
   spec-guard:
@@ -40,95 +23,74 @@ jobs:
     if: github.event.pull_request.base.ref == 'develop'
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: read
+    env:
+      GH_TOKEN: ${{ github.token }}
     steps:
-      - name: Require the cross-repo App credentials
-        env:
-          APP_ID: ${{ secrets.LOOP_APP_ID }}
-          APP_KEY: ${{ secrets.LOOP_APP_PRIVATE_KEY }}
-        run: |
-          if [ -z "$APP_ID" ] || [ -z "$APP_KEY" ]; then
-            echo "::error::spec-guard cannot read ${{ inputs.specs_repo }}: LOOP_APP_ID / LOOP_APP_PRIVATE_KEY are not set (fork PRs never get them). See SETUP.md."
-            exit 1
-          fi
-
-      - name: Resolve the specs repo name
-        id: specs
-        env:
-          SPECS_REPO: ${{ inputs.specs_repo }}
-        run: printf 'name=%s\n' "${SPECS_REPO#*/}" >> "$GITHUB_OUTPUT"
-
-      - name: Mint cross-repo token
-        id: token
-        uses: actions/create-github-app-token@v1
-        with:
-          app-id: ${{ secrets.LOOP_APP_ID }}
-          private-key: ${{ secrets.LOOP_APP_PRIVATE_KEY }}
-          owner: ${{ github.repository_owner }}
-          repositories: ${{ steps.specs.outputs.name }}
-
       - uses: actions/checkout@v4
         with:
           fetch-depth: 1
 
-      - uses: actions/checkout@v4
-        with:
-          repository: ${{ inputs.specs_repo }}
-          path: .specs-repo
-          token: ${{ steps.token.outputs.token }}
-          fetch-depth: 0
-
-      - name: Check the PR pins the current spec
+      - name: Check the PR pins the current spec comment
         env:
           BODY: ${{ github.event.pull_request.body }}
-          REPO_NAME: ${{ github.event.repository.name }}
-          SPECS_REPO: ${{ inputs.specs_repo }}
+          REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
 
           N=$(printf '%s' "$BODY" | grep -oiE '(fix(es|ed)?|close[sd]?|resolve[sd]?)[[:space:]]+#[0-9]+' | grep -oE '[0-9]+' | head -n1 || true)
           if [ -z "$N" ]; then echo "No linked issue — nothing to guard."; exit 0; fi
 
-          SPEC_DIR=$(ls -d ".specs-repo/specs/${REPO_NAME}/${N}-"* 2>/dev/null | head -n1 || true)
+          MARKER="<!-- agent-spec:${N} -->"
+          SPEC_CID=$(MARKER="$MARKER" gh api "repos/${REPO}/issues/${N}/comments" --paginate \
+                       --jq '[.[] | select(.body | contains(env.MARKER)) | .id] | last // empty' 2>/dev/null || true)
           REF=".specs/${N}.ref"
 
           if [ ! -f "$REF" ]; then
-            if [ -n "$SPEC_DIR" ]; then
-              echo "::error::Issue #${N} has an approved spec (${SPEC_DIR#.specs-repo/}) but this PR does not pin it. Expected the file ${REF} — re-run \`claude-implement\`, or add it by hand."
+            if [ -n "$SPEC_CID" ]; then
+              echo "::error::Issue #${N} has a spec comment but this PR does not pin it. Expected ${REF} — re-run \`claude-implement\`, or add the 'no-spec' label to the issue if it is intentionally spec-less."
               exit 1
             fi
-            echo "No spec for issue #${N} and no pin — nothing to guard."
+            echo "No spec comment for issue #${N} and no pin — nothing to guard."
             exit 0
           fi
 
-          # Parse, never source: this file comes from the PR branch and sourcing it would execute
-          # whatever an author put in it, in a job that holds an installation token.
+          # Parse, never source: this file comes from the PR branch, and sourcing it would execute
+          # whatever an author put in it.
           val () { grep -m1 "^$1=" "$REF" | cut -d= -f2- || true; }
-          PIN_REPO=$(val repo); PIN_PATH=$(val path); PIN_SHA=$(val sha)
+          PIN_SRC=$(val source); PIN_CID=$(val comment_id); PIN_SHA=$(val spec_sha256)
 
-          if [ "$PIN_REPO" != "$SPECS_REPO" ]; then
-            echo "::error::${REF} pins '${PIN_REPO}', but this repo reconciles against '${SPECS_REPO}'."
+          if [ "$PIN_SRC" != "issue-comment" ]; then
+            echo "::error::${REF} has source='${PIN_SRC}', expected 'issue-comment' (v0.6.x). Re-run \`claude-implement\` to re-pin."
             exit 1
           fi
-          if ! printf '%s' "$PIN_SHA" | grep -qE '^[0-9a-f]{40}$'; then
-            echo "::error::${REF} has a malformed sha: '${PIN_SHA}'."
+          if ! printf '%s' "$PIN_CID" | grep -qE '^[0-9]+$'; then
+            echo "::error::${REF} has a malformed comment_id: '${PIN_CID}'."
             exit 1
           fi
-
-          HEAD_SHA=$(git -C .specs-repo log -1 --format=%H -- "$PIN_PATH")
-          if [ -z "$HEAD_SHA" ]; then
-            echo "::error::${REF} points at '${PIN_PATH}', which does not exist in ${SPECS_REPO}."
+          if ! printf '%s' "$PIN_SHA" | grep -qE '^[0-9a-f]{64}$'; then
+            echo "::error::${REF} has a malformed spec_sha256: '${PIN_SHA}'."
             exit 1
           fi
 
-          if [ "$PIN_SHA" = "$HEAD_SHA" ]; then
-            echo "Pin is current (${PIN_PATH} @ ${PIN_SHA})."
+          # Re-fetch the pinned comment. Same hash pipeline as implement.yml — keep them identical.
+          if ! gh api "repos/${REPO}/issues/comments/${PIN_CID}" --jq '.body' > "$RUNNER_TEMP/now" 2>/dev/null; then
+            echo "::error::The pinned spec comment (id ${PIN_CID}) no longer exists on ${REPO}. Re-run \`specify\` + \`claude-implement\` to re-pin."
+            exit 1
+          fi
+          NOW_SHA=$(tr -d '\r' < "$RUNNER_TEMP/now" | sha256sum | cut -d' ' -f1)
+
+          if [ "$PIN_SHA" = "$NOW_SHA" ]; then
+            echo "Pin is current (issue #${N}, comment ${PIN_CID} @ sha256:${PIN_SHA})."
             exit 0
           fi
 
           if printf '%s' "$BODY" | grep -qiE '^[[:space:]]*-[[:space:]]*\[x\][[:space:]].*spec.*(accurate|unchanged|up[- ]?to[- ]?date)'; then
-            echo "::warning::The spec moved (${PIN_SHA} -> ${HEAD_SHA}) but the PR attests the code is still accurate. Allowing."
+            echo "::warning::The spec comment changed (pin ${PIN_SHA} != now ${NOW_SHA}) but the PR attests the code is still accurate. Allowing."
             exit 0
           fi
 
-          echo "::error::The spec moved after this PR was written. ${PIN_PATH} is now at ${HEAD_SHA}, this PR pins ${PIN_SHA}. Review the change (https://github.com/${SPECS_REPO}/compare/${PIN_SHA}...${HEAD_SHA}), then update ${REF} — or tick the 'spec is still accurate' box in the PR body."
+          echo "::error::The spec comment changed after this PR was written. See https://github.com/${REPO}/issues/${N}#issuecomment-${PIN_CID} — reconcile the code, then re-run \`claude-implement\` to re-pin (or tick the 'spec is still accurate' box in the PR body)."
           exit 1

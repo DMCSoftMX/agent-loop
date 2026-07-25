@@ -4,9 +4,11 @@
 # here you only pin the version (@vX). Renovate (stubs/renovate.json) bumps that pin for you.
 # Per-repo data stays local: CLAUDE.md, setup.env, and the .specs/<issue#>.ref pins.
 #
-# SINCE v0.5.0 the specs live in DMCSoftMX/specs, not here (ADR-0001). `secrets: inherit` already
-# forwards what that needs, but the repo must actually HAVE the secrets LOOP_APP_ID and
-# LOOP_APP_PRIVATE_KEY — run preflight once after bumping to v0.5.0 and it will tell you.
+# SINCE v0.6.0 (ADR-0002) specs are CANONICAL COMMENTS on the issues of THIS repo — no dedicated
+# specs repo, no GitHub App, no cross-repo token. `.specs/<n>.ref` pins the spec comment by content
+# hash. The only secret the loop needs is CLAUDE_CODE_OAUTH_TOKEN. It is passed EXPLICITLY (not
+# `secrets: inherit`) so one stub works both same-org and cross-account — `inherit` does not cross
+# the account/org boundary and would hand the engine an empty secret.
 name: Agent loop
 
 on:
@@ -36,27 +38,31 @@ permissions:
 
 jobs:
   # Run ONCE per repo after setup (Actions -> "Agent loop" -> Run workflow) to
-  # validate secret/token/App/config before the first real phase. Never fires
-  # on normal events.
+  # validate secret/token/config before the first real phase. Never fires on
+  # normal events.
   preflight:
     if: github.event_name == 'workflow_dispatch'
-    uses: DMCSoftMX/agent-loop/.github/workflows/preflight.yml@v0.5.0
-    secrets: inherit
+    uses: DMCSoftMX/agent-loop/.github/workflows/preflight.yml@v0.6.0
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
 
   specify:
     if: github.event_name == 'issues' && github.event.label.name == 'specify'
-    uses: DMCSoftMX/agent-loop/.github/workflows/specify.yml@v0.5.0
-    secrets: inherit
+    uses: DMCSoftMX/agent-loop/.github/workflows/specify.yml@v0.6.0
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
 
   plan:
     if: github.event_name == 'issues' && github.event.label.name == 'plan'
-    uses: DMCSoftMX/agent-loop/.github/workflows/plan.yml@v0.5.0
-    secrets: inherit
+    uses: DMCSoftMX/agent-loop/.github/workflows/plan.yml@v0.6.0
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
 
   implement:
     if: github.event_name == 'issues' && github.event.label.name == 'claude-implement'
-    uses: DMCSoftMX/agent-loop/.github/workflows/implement.yml@v0.5.0
-    secrets: inherit
+    uses: DMCSoftMX/agent-loop/.github/workflows/implement.yml@v0.6.0
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
 
   claude:
     if: |
@@ -64,25 +70,26 @@ jobs:
       (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude')) ||
       (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@claude')) ||
       (github.event_name == 'issues' && (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude')))
-    uses: DMCSoftMX/agent-loop/.github/workflows/claude.yml@v0.5.0
-    secrets: inherit
+    uses: DMCSoftMX/agent-loop/.github/workflows/claude.yml@v0.6.0
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
 
   review:
     if: github.event_name == 'pull_request'
-    uses: DMCSoftMX/agent-loop/.github/workflows/review.yml@v0.5.0
-    secrets: inherit
+    uses: DMCSoftMX/agent-loop/.github/workflows/review.yml@v0.6.0
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
 
+  # No secrets: spec-guard reconciles the pin against the issue comment with the default
+  # GITHUB_TOKEN, and pr-gate / ci need none.
   pr-gate:
     if: github.event_name == 'pull_request'
-    uses: DMCSoftMX/agent-loop/.github/workflows/pr-gate.yml@v0.5.0
-    secrets: inherit
+    uses: DMCSoftMX/agent-loop/.github/workflows/pr-gate.yml@v0.6.0
 
   spec-guard:
     if: github.event_name == 'pull_request'
-    uses: DMCSoftMX/agent-loop/.github/workflows/spec-guard.yml@v0.5.0
-    secrets: inherit
+    uses: DMCSoftMX/agent-loop/.github/workflows/spec-guard.yml@v0.6.0
 
   ci:
     if: github.event_name == 'push' || github.event_name == 'pull_request'
-    uses: DMCSoftMX/agent-loop/.github/workflows/ci.yml@v0.5.0
-    secrets: inherit
+    uses: DMCSoftMX/agent-loop/.github/workflows/ci.yml@v0.6.0
