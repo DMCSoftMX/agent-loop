@@ -128,8 +128,10 @@ jobs:
                 echo "- \`$br\`: **advisory only** — branch protection needs a paid plan on a private repo. Gates report but do NOT block the merge; the human is the gate." >> "$GITHUB_STEP_SUMMARY"
                 echo "::warning::branch '$br': gates are ADVISORY (protection needs a paid plan on a private repo). The human is the merge gate."
               else
-                echo "- \`$br\`: **advisory only** — not protected. Gates report but do NOT block the merge. Require ci / pr-gate / spec-guard on it to enforce." >> "$GITHUB_STEP_SUMMARY"
-                echo "::warning::branch '$br' is not protected — gates are ADVISORY."
+                # Not protected. Could be a paid/public repo with protection simply off, or a private
+                # Free repo where it's unavailable — the token can't always tell, so stay plan-agnostic.
+                echo "- \`$br\`: **advisory only** — not protected. Gates report but do NOT block the merge. Protect it in Settings → Branches (requires GitHub Pro on a private repo); otherwise the human is the gate." >> "$GITHUB_STEP_SUMMARY"
+                echo "::warning::branch '$br' is not protected — gates are ADVISORY. The human is the merge gate."
               fi
             fi
           done
