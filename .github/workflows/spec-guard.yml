@@ -8,6 +8,10 @@ name: Spec Guard (reusable)
 #   1. If the linked issue has a spec comment, the PR must carry `.specs/<issue#>.ref` pinning it.
 #   2. Re-fetches the comment and re-hashes it; the hash must still match the pin.
 #
+# The `no-spec` label on the linked issue waives BOTH (issue #13): it means the same thing here as
+# in `implement` — "this issue's PRs don't pin a spec" — so a specified issue can still be resolved
+# by hand. Waiving drift protection is the point of the label, not a loophole.
+#
 # Rule 2 is the forcing function: if a human edits the spec comment after the code was written, the
 # hash changes, every open code PR pinned to the old hash goes red, and someone has to look at the
 # code again before merging.
@@ -42,6 +46,15 @@ jobs:
 
           N=$(printf '%s' "$BODY" | grep -oiE '(fix(es|ed)?|close[sd]?|resolve[sd]?)[[:space:]]+#[0-9]+' | grep -oE '[0-9]+' | head -n1 || true)
           if [ -z "$N" ]; then echo "No linked issue — nothing to guard."; exit 0; fi
+
+          # `no-spec` waives the guard (issue #13): the error below advertises the label as the
+          # escape hatch, so it must actually BE one — same meaning as in `implement`. Fail-closed:
+          # if the labels can't be read, the guard stays on.
+          LABELS=$(gh api "repos/${REPO}/issues/${N}" --jq '[.labels[].name] | join(",")' 2>/dev/null || true)
+          if printf '%s' ",$LABELS," | grep -q ',no-spec,'; then
+            echo "Issue #${N} is labeled 'no-spec' — spec pin waived, nothing to guard."
+            exit 0
+          fi
 
           MARKER="<!-- agent-spec:${N} -->"
           SPEC_CID=$(MARKER="$MARKER" gh api "repos/${REPO}/issues/${N}/comments" --paginate \
