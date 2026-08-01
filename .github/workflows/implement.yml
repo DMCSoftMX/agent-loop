@@ -1,8 +1,10 @@
 name: Implement (reusable)
 
-# The agent implements against the spec and opens a PR. Reads the caller's setup.env for the stack
-# + self-verify commands (installs deps, self-verifies before the PR). The `claude-implement` label
-# guard lives in the project stub.
+# The agent implements against the spec; a deterministic step then OPENS the PR and asserts it
+# exists (issue #12) — the agent has no Bash/gh, so it can only commit a branch, and a green run
+# must mean "the PR exists", not "a branch exists somewhere". Reads the caller's setup.env for the
+# stack + self-verify commands (installs deps, self-verifies before the PR). The `claude-implement`
+# label guard lives in the project stub.
 #
 # SINCE v0.6.0 (ADR-0002): the spec is a CANONICAL COMMENT on the issue, marked `<!-- agent-spec:<n> -->`.
 # A deterministic step resolves it, hands it to the agent read-only, and writes the pin
@@ -130,11 +132,15 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          github_token: ${{ github.token }}
+          # NO github_token input here, unlike the other phases (issue #12): omitting it makes the
+          # action mint a Claude App installation token (preflight guarantees the App is installed)
+          # and expose it in outputs. The publish step below opens the PR with THAT token — a PR
+          # created with the default GITHUB_TOKEN would never trigger the `pull_request` gates
+          # (GitHub suppresses recursive workflow triggers for it).
           track_progress: "true"
           prompt: |
-            Implement the issue that triggered this event (it was labeled `claude-implement`) and
-            open a Pull Request.
+            Implement the issue that triggered this event (it was labeled `claude-implement`). An
+            automated step AFTER you opens the Pull Request — you author the code and the PR body.
 
             1. SOURCE OF TRUTH. Spec found for this issue: `${{ steps.spec.outputs.found }}`.
                - If `true`: read `${{ runner.temp }}/spec.md` — the approved spec (a read-only copy
@@ -153,12 +159,70 @@ jobs:
                `${{ steps.spec.outputs.ref }}` has ALREADY been written for you — `git add` it and
                include it in the SAME commit as the code. It records the exact spec-comment version
                you worked against; `spec-guard` fails the PR without it.
-            5. Open the PR against `develop` (the integration branch, NOT main). Its body MUST include
-               `Fixes #${{ github.event.issue.number }}`. Summarize which "Approach & tasks" items you
-               completed and which you did not.
+            5. Do NOT open the PR and do NOT post a compare link — the automated step after you
+               opens it against `develop` and links it to this issue. Your last deliverable is the
+               PR body: write it to EXACTLY `${{ runner.temp }}/PR_BODY.md`. Summarize which
+               "Approach & tasks" items you completed and which you did not, and call out anything
+               still red. Do NOT include a "Fixes #" line — the publish step adds it.
           claude_args: |
             --model ${{ inputs.model }}
             --allowedTools ${{ env.AGENT_TOOLS }}
+
+      # --- deterministic publish (issue #12): open the PR and assert it exists ------------------
+      # Same author-vs-plumbing split as specify/plan: the agent authors (code + PR body file),
+      # this step publishes. Before it, a green implement could leave an orphaned branch behind a
+      # "Create PR" link nobody clicked — work committed, no gates ever run, nothing red anywhere.
+      - name: Open the PR and assert it exists
+        env:
+          # The App token minted by the action (see above). Falls back to GITHUB_TOKEN so a
+          # missing mint still produces the PR — with a loud warning, because the gates won't
+          # auto-run on it.
+          GH_TOKEN: ${{ steps.claude.outputs.github_token || github.token }}
+          APP_TOKEN: ${{ steps.claude.outputs.github_token }}
+          REPO: ${{ github.repository }}
+          ISSUE: ${{ github.event.issue.number }}
+          BRANCH: ${{ steps.claude.outputs.branch_name }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "$APP_TOKEN" ]; then
+            echo "::warning::The action minted no App token — opening the PR with GITHUB_TOKEN. The gates will NOT auto-run on it; close/reopen the PR (or push to it) to trigger them."
+          fi
+
+          # The action reports the branch it created; fall back to the newest claude/issue-<n>-*
+          # branch (the name embeds a timestamp, so the lexicographic max is the newest).
+          if [ -z "$BRANCH" ]; then
+            BRANCH=$(gh api "repos/${REPO}/git/matching-refs/heads/claude/issue-${ISSUE}-" \
+                       --jq '[.[].ref | sub("^refs/heads/"; "")] | sort | last // empty')
+          fi
+          if [ -z "$BRANCH" ]; then
+            echo "::error::implement produced no branch for issue #${ISSUE} — the agent committed nothing. See its progress comment on the issue."
+            exit 1
+          fi
+
+          # Idempotent on re-runs: if the branch already has an open PR, the artifact exists.
+          EXISTING=$(gh pr list --repo "$REPO" --head "$BRANCH" --state open --json number --jq '.[0].number // empty')
+          if [ -n "$EXISTING" ]; then
+            echo "PR #${EXISTING} already open for ${BRANCH} — nothing to do."
+            exit 0
+          fi
+
+          # The agent authors the body; the `Fixes #<n>` line is OURS to guarantee — spec-guard
+          # and the issue autolink depend on it, so it is never left to the author.
+          FINAL="$RUNNER_TEMP/pr_body_final.md"
+          {
+            printf 'Fixes #%s\n\n' "$ISSUE"
+            if [ -s "$RUNNER_TEMP/PR_BODY.md" ]; then
+              cat "$RUNNER_TEMP/PR_BODY.md"
+            else
+              echo "_The agent wrote no PR body — see its progress comment on issue #${ISSUE} for what was done._"
+            fi
+          } > "$FINAL"
+
+          TITLE=$(gh api "repos/${REPO}/issues/${ISSUE}" --jq .title)
+          URL=$(gh pr create --repo "$REPO" --base develop --head "$BRANCH" \
+                  --title "$TITLE" --body-file "$FINAL")
+          echo "Opened ${URL} (head ${BRANCH})."
 
       # Surface permission_denials_count (retro #3): if the agent was blocked mid-run it may have
       # skipped an intended edit or commit while still reporting green. Warn loud; the pin/PR

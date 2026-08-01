@@ -14,7 +14,7 @@ agent-loop/                              ← DMCSoftMX/agent-loop (semver-tagged
 ├── .github/workflows/                   ← the reusable engine (on: workflow_call)
 │   ├── specify.yml       phase 1 · posts the spec as the issue's canonical comment
 │   ├── plan.yml          optional escalation · posts a deep plan comment
-│   ├── implement.yml     agent implements against the spec · writes the .specs/<n>.ref pin
+│   ├── implement.yml     agent implements against the spec · writes the .specs/<n>.ref pin · opens the PR and asserts it exists
 │   ├── claude.yml        interactive @claude
 │   ├── review.yml        PR review vs the spec · posts it · REVIEW-VERDICT BLOCK ⇒ red check
 │   ├── pr-gate.yml       binding definition-of-done gate
@@ -68,8 +68,9 @@ start — a `startup_failure` on preflight **is** that diagnosis.)
 3. **`plan`** (optional, label `plan`) → posts a deep-design comment that supersedes the spec's
    light approach.
 4. **`claude-implement`** → the agent reads the spec comment, implements, and commits the code plus
-   `.specs/<n>.ref`, then opens a PR. **Fail-closed:** with no spec comment and no `no-spec` label,
-   it stops rather than silently building from the issue body.
+   `.specs/<n>.ref`; a deterministic step then **opens the PR and asserts it exists** (green =
+   the PR is there, not just a branch). **Fail-closed:** with no spec comment and no `no-spec`
+   label, it stops rather than silently building from the issue body.
 5. **Gates** on the PR → `review` · `pr-gate` · `spec-guard` · `ci`. **`spec-guard`** re-fetches the
    pinned comment and re-hashes it: if someone edited the spec after the code was written, the hash
    no longer matches and the PR goes red until it is reconciled. **`review`** posts its review
