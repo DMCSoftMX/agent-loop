@@ -37,7 +37,7 @@ every event (labels, `@claude`, PRs, push) to the reusable workflows here, pinne
 jobs:
   specify:
     if: github.event_name == 'issues' && github.event.label.name == 'specify'
-    uses: DMCSoftMX/agent-loop/.github/workflows/specify.yml@v0.7.1
+    uses: DMCSoftMX/agent-loop/.github/workflows/specify.yml@v0.7.2
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
   # … plan · implement · claude · review · pr-gate · spec-guard · ci · preflight (same shape)
@@ -59,7 +59,7 @@ first real `specify`. It only fires on `workflow_dispatch`; normal events skip i
 *can't* catch from the inside: if the stub lacks its `permissions:` block, preflight itself won't
 start — a `startup_failure` on preflight **is** that diagnosis.)
 
-## The SDD flow (v0.7.1)
+## The SDD flow (v0.7.2)
 
 1. **`specify`** (label `specify`) → the agent drafts the spec; a deterministic step upserts it as
    the issue's canonical comment. Re-running edits that same comment in place.
@@ -114,8 +114,8 @@ start — a `startup_failure` on preflight **is** that diagnosis.)
   (ADR-0002), `v0.7.x` = `review` posts + emits an enforceable verdict, agent phases surface
   `permission_denials_count`, and `preflight` reports the gate enforcement level; `v0.7.1` made
   `spec-guard` honor `no-spec` and (wrongly) tried to auto-open the PR, which **`v0.7.2` reverted
-  to an assertion** after the smoke run proved it impossible — pin `@v0.7.2`, not `@v0.7.1`. No
-  runtime fallback — a repo migrates by bumping its pin.
+  to an assertion** after the smoke run proved it impossible. **`v0.7.1` is broken — never pin it.**
+  No runtime fallback — a repo migrates by bumping its pin.
 - Projects pin `@vX` in their stub. **Renovate** ([`stubs/renovate.json`](stubs/renovate.json))
   opens a **bump PR** in each project on a new tag → you merge it (human gate preserved).
 
