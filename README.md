@@ -37,7 +37,7 @@ every event (labels, `@claude`, PRs, push) to the reusable workflows here, pinne
 jobs:
   specify:
     if: github.event_name == 'issues' && github.event.label.name == 'specify'
-    uses: DMCSoftMX/agent-loop/.github/workflows/specify.yml@v0.7.0
+    uses: DMCSoftMX/agent-loop/.github/workflows/specify.yml@v0.7.1
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
   # … plan · implement · claude · review · pr-gate · spec-guard · ci · preflight (same shape)
@@ -59,7 +59,7 @@ first real `specify`. It only fires on `workflow_dispatch`; normal events skip i
 *can't* catch from the inside: if the stub lacks its `permissions:` block, preflight itself won't
 start — a `startup_failure` on preflight **is** that diagnosis.)
 
-## The SDD flow (v0.7.0)
+## The SDD flow (v0.7.1)
 
 1. **`specify`** (label `specify`) → the agent drafts the spec; a deterministic step upserts it as
    the issue's canonical comment. Re-running edits that same comment in place.
@@ -109,7 +109,8 @@ start — a `startup_failure` on preflight **is** that diagnosis.)
 - Engine released with **semver tags** (`v0.2.0`, `v0.3.0`, …). The `@vX` pin **is** the migration
   mechanism: `v0.5.x` = specs in a dedicated repo (ADR-0001), `v0.6.x` = specs as issue comments
   (ADR-0002), `v0.7.x` = `review` posts + emits an enforceable verdict, agent phases surface
-  `permission_denials_count`, and `preflight` reports the gate enforcement level. No runtime
+  `permission_denials_count`, and `preflight` reports the gate enforcement level; since `v0.7.1`
+  `implement` opens + asserts the PR itself and `spec-guard` honors `no-spec`. No runtime
   fallback — a repo migrates by bumping its pin.
 - Projects pin `@vX` in their stub. **Renovate** ([`stubs/renovate.json`](stubs/renovate.json))
   opens a **bump PR** in each project on a new tag → you merge it (human gate preserved).
