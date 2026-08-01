@@ -14,7 +14,7 @@ agent-loop/                              ← DMCSoftMX/agent-loop (semver-tagged
 ├── .github/workflows/                   ← the reusable engine (on: workflow_call)
 │   ├── specify.yml       phase 1 · posts the spec as the issue's canonical comment
 │   ├── plan.yml          optional escalation · posts a deep plan comment
-│   ├── implement.yml     agent implements against the spec · writes the .specs/<n>.ref pin · opens the PR and asserts it exists
+│   ├── implement.yml     agent implements against the spec · writes the .specs/<n>.ref pin · asserts the branch + surfaces the PR link
 │   ├── claude.yml        interactive @claude
 │   ├── review.yml        PR review vs the spec · posts it · REVIEW-VERDICT BLOCK ⇒ red check
 │   ├── pr-gate.yml       binding definition-of-done gate
@@ -68,9 +68,12 @@ start — a `startup_failure` on preflight **is** that diagnosis.)
 3. **`plan`** (optional, label `plan`) → posts a deep-design comment that supersedes the spec's
    light approach.
 4. **`claude-implement`** → the agent reads the spec comment, implements, and commits the code plus
-   `.specs/<n>.ref`; a deterministic step then **opens the PR and asserts it exists** (green =
-   the PR is there, not just a branch). **Fail-closed:** with no spec comment and no `no-spec`
-   label, it stops rather than silently building from the issue body.
+   `.specs/<n>.ref`; a deterministic step then **asserts the branch exists** and puts a
+   **"Create the PR ➔"** link in the run summary — **you click it, and that click is what fires the
+   gates** (a PR opened by the loop's own token would not trigger them; see the note in
+   `implement.yml`). No branch ⇒ red run, so a green `implement` always leaves something to open.
+   **Fail-closed:** with no spec comment and no `no-spec` label, it stops rather than silently
+   building from the issue body.
 5. **Gates** on the PR → `review` · `pr-gate` · `spec-guard` · `ci`. **`spec-guard`** re-fetches the
    pinned comment and re-hashes it: if someone edited the spec after the code was written, the hash
    no longer matches and the PR goes red until it is reconciled. **`review`** posts its review
@@ -109,9 +112,10 @@ start — a `startup_failure` on preflight **is** that diagnosis.)
 - Engine released with **semver tags** (`v0.2.0`, `v0.3.0`, …). The `@vX` pin **is** the migration
   mechanism: `v0.5.x` = specs in a dedicated repo (ADR-0001), `v0.6.x` = specs as issue comments
   (ADR-0002), `v0.7.x` = `review` posts + emits an enforceable verdict, agent phases surface
-  `permission_denials_count`, and `preflight` reports the gate enforcement level; since `v0.7.1`
-  `implement` opens + asserts the PR itself and `spec-guard` honors `no-spec`. No runtime
-  fallback — a repo migrates by bumping its pin.
+  `permission_denials_count`, and `preflight` reports the gate enforcement level; `v0.7.1` made
+  `spec-guard` honor `no-spec` and (wrongly) tried to auto-open the PR, which **`v0.7.2` reverted
+  to an assertion** after the smoke run proved it impossible — pin `@v0.7.2`, not `@v0.7.1`. No
+  runtime fallback — a repo migrates by bumping its pin.
 - Projects pin `@vX` in their stub. **Renovate** ([`stubs/renovate.json`](stubs/renovate.json))
   opens a **bump PR** in each project on a new tag → you merge it (human gate preserved).
 
