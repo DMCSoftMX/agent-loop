@@ -20,12 +20,16 @@ agent-loop/                              ← DMCSoftMX/agent-loop (semver-tagged
 │   ├── pr-gate.yml       binding definition-of-done gate
 │   ├── spec-guard.yml    anti-drift: re-hashes the spec comment, must match the pin
 │   ├── ci.yml            stack-aware validate (reads setup.env)
-│   └── preflight.yml     one-shot setup check (workflow_dispatch): secret · Claude App · config · gate enforcement level
+│   ├── preflight.yml     one-shot setup check (workflow_dispatch): secret · Claude App · config · gate enforcement · pin freshness
+│   └── tag-guard.yml     NOT reusable — guards THIS repo's releases (on: push tags)
 │   (spec/plan templates are INLINED in the specify/plan prompts — no separate files, no engine
 │    checkout, so this repo can stay private with zero per-repo tokens.)
-└── stubs/                what each PROJECT repo copies (once)
-    ├── loop.yml          the thin router stub (.github/workflows/loop.yml)
-    └── dependabot.yml    auto-bumps the engine version across projects
+├── stubs/                what each PROJECT repo copies (once)
+│   ├── loop.yml          the thin router stub (.github/workflows/loop.yml)
+│   └── dependabot.yml    auto-bumps the engine version across projects
+├── CHANGELOG.md          what every tag changed
+├── RELEASING.md          the checklist for cutting one
+└── LICENSE               MIT
 ```
 
 ## How a project consumes it
@@ -154,3 +158,15 @@ loop token doesn't have, so confirm "Include administrators" yourself in Setting
 
 PR/issue templates can't be "reused" (GitHub reads them from the repo) — publish them as
 **org defaults** in `DMCSoftMX/.github`, or sync with Cruft/multi-gitter.
+
+## Releasing
+
+A tag is the only thing project repos consume, so cutting one has a checklist:
+**[RELEASING.md](RELEASING.md)**. It exists because two releases went out wrong without it —
+`v0.7.2` shipped a stub pinned at the broken `v0.7.1`, and `v0.7.3` was tagged but never published,
+so GitHub kept announcing `v0.7.0` as *Latest*. `tag-guard` now fails any tag whose
+`stubs/loop.yml` does not pin that same tag. What each version changed: **[CHANGELOG.md](CHANGELOG.md)**.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
