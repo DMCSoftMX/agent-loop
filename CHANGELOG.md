@@ -4,7 +4,7 @@ Every released tag of the engine, newest first. A project repo consumes a tag by
 stub (`uses: DMCSoftMX/agent-loop/.github/workflows/<phase>.yml@vX.Y.Z`), so **a version is only
 real once it is tagged AND its `stubs/loop.yml` pins itself** — see [RELEASING.md](RELEASING.md).
 
-## v0.8.0 — release hygiene (unreleased)
+## v0.8.0 — release hygiene — 2026-09-05
 
 - **MIT `LICENSE`.** The repo is public and had none, which legally meant nobody could reuse it.
 - **This changelog** and **[RELEASING.md](RELEASING.md)**, the checklist whose absence caused the
