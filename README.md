@@ -41,7 +41,7 @@ every event (labels, `@claude`, PRs, push) to the reusable workflows here, pinne
 jobs:
   specify:
     if: github.event_name == 'issues' && github.event.label.name == 'specify'
-    uses: DMCSoftMX/agent-loop/.github/workflows/specify.yml@v0.8.0
+    uses: DMCSoftMX/agent-loop/.github/workflows/specify.yml@v1.0.0
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
   # … plan · implement · claude · review · pr-gate · spec-guard · ci · preflight (same shape)
@@ -158,6 +158,27 @@ loop token doesn't have, so confirm "Include administrators" yourself in Setting
 
 PR/issue templates can't be "reused" (GitHub reads them from the repo) — publish them as
 **org defaults** in `DMCSoftMX/.github`, or sync with Cruft/multi-gitter.
+
+## Stability
+
+`v1.0.0` freezes the surface a project repo depends on. These do not change without a **major**
+bump, because changing any of them makes an existing stub wrong:
+
+| Frozen | Today |
+|---|---|
+| Job names in the stub | `preflight` · `specify` · `plan` · `implement` · `claude` · `review` · `pr-gate` · `spec-guard` · `ci` |
+| Workflow filenames (the `uses:` paths) | `<job>.yml` under `.github/workflows/` |
+| Labels that trigger phases | `specify` · `plan` · `claude-implement` · `no-spec` |
+| Interactive trigger | `@claude` in an issue, PR or review comment |
+| Branch the agent writes | `claude/issue-<n>-<timestamp>` |
+| Spec pin file | `.specs/<issue#>.ref`, keys `source` · `issue` · `comment_id` · `spec_sha256` · `captured` |
+| Spec comment marker | `<!-- agent-spec:<n> -->` (and `<!-- agent-plan:<n> -->`) |
+| Secret | `CLAUDE_CODE_OAUTH_TOKEN`, passed explicitly |
+| Per-repo config | `setup.env` keys read by `ci` |
+| Integration branch | PRs into `develop`; `pr-gate` and `spec-guard` only gate that base |
+
+What is **not** frozen: prompt wording, the review's phrasing, log and summary text, and anything
+inside a phase that does not change what the caller writes or reads.
 
 ## Releasing
 
