@@ -20,8 +20,11 @@ but never published, so GitHub kept announcing `v0.7.0` as *Latest* for a month.
    `tag-guard` runs on the push and fails if `stubs/loop.yml` does not pin `vX.Y.Z`. If it goes red:
    `git push --delete origin vX.Y.Z`, fix step 2, tag again. Deleting a tag nobody has adopted yet is
    cheap; a wrong tag that repos have already pinned is not.
-5. **Validate end to end on `DMCSoftMX/agent-loop-smoke`**: bump its pin to the new tag, then run one
-   full lap — issue → `specify` → edit the spec comment → `claude-implement` → click "Create the
+5. **Validate end to end on `DMCSoftMX/agent-loop-smoke`**: bump its pin to the new tag, **merge that
+   bump**, and run from `develop` — not from the bump's branch. `claude-code-action` refuses to run
+   when the workflow file differs from the one on the default branch ("Skipping action due to
+   workflow validation"), so a dispatch against the branch skips the Claude ping and preflight ends
+   red for a reason that has nothing to do with the release. Then run one full lap — issue → `specify` → edit the spec comment → `claude-implement` → click "Create the
    PR ➔" → the four gates green → merge. If the release changes a phase, do the lap; if it only
    touches docs or stubs, `preflight` is enough.
 6. **Publish the release** so *Latest* tells the truth:
