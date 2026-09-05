@@ -90,6 +90,26 @@ jobs:
           def=$(gh api "repos/${{ github.repository }}" -q .default_branch)
           [ "$def" = "develop" ] || echo "::warning::default branch is '$def', expected 'develop' (issue triggers read from the default branch)"
 
+      # ---- freshness: is this repo's pin behind the newest engine tag? -----
+      # Two repos sat a version behind for a month with nobody noticing. Dependabot proposes the
+      # bump weekly; this answers the same question on demand. Never fails: being behind can be a
+      # decision, and preflight only reports.
+      - name: Engine pin freshness (advisory)
+        run: |
+          STUB=.github/workflows/loop.yml
+          latest=$(gh api repos/DMCSoftMX/agent-loop/tags --paginate --jq '.[].name' 2>/dev/null | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1 || true)
+          pinned=$(grep -oE "DMCSoftMX/agent-loop/\.github/workflows/[a-z-]+\.yml@[A-Za-z0-9._-]+" "$STUB" 2>/dev/null | sed 's/.*@//' | sort -u || true)
+          n=$(printf '%s' "$pinned" | grep -c . || true)
+          if [ -z "$latest" ] || [ -z "$pinned" ]; then
+            echo "::warning::could not compare the engine pin with the latest tag (pinned='$pinned' latest='$latest')"
+          elif [ "$n" -gt 1 ]; then
+            echo "::warning::the stub mixes engine versions ($(echo $pinned)) - pin every job to the same tag"
+          elif [ "$pinned" = "$latest" ]; then
+            echo "engine pin $pinned is the newest tag."
+          else
+            echo "::notice::engine pin $pinned is behind $latest - Dependabot will propose the bump, or edit $STUB by hand."
+          fi
+
       # ---- enforcement level: do the gates actually BLOCK a merge? (retro #6) --
       # "Gated PR" implies the gates stop a bad merge. They only do so if the branch is protected. The
       # default GITHUB_TOKEN cannot read the /protection DETAIL (that needs admin, which is NOT a

@@ -1,0 +1,24 @@
+# .github/dependabot.yml — copy this into EACH project repo, next to the stub.
+#
+# Keeps the engine pin in .github/workflows/loop.yml current: when a new agent-loop tag lands,
+# Dependabot opens ONE grouped PR bumping every `uses: …@vX` line, and you merge it — the human
+# gate stays. Native to GitHub: nothing to install, works on private repos.
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"          # scans .github/workflows/
+    schedule:
+      interval: "weekly"
+    # The integration branch. Without this, Dependabot targets the repo's DEFAULT branch, which is
+    # not always the one the loop merges into. Drop the line if this repo has no `develop`.
+    target-branch: "develop"
+    # Engine only. Delete this block to also get actions/checkout, setup-*, and friends.
+    allow:
+      - dependency-name: "DMCSoftMX/agent-loop*"
+    groups:
+      agent-loop-engine:
+        patterns:
+          - "DMCSoftMX/agent-loop*"
+    commit-message:
+      prefix: "chore(deps)"
+    open-pull-requests-limit: 3

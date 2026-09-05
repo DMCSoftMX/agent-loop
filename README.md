@@ -2,7 +2,7 @@
 
 The **versioned engine** for the spec-driven agent loop. Its logic, templates and prompts are
 maintained **once, here**. Each project repo carries only a thin stub that *calls* this engine —
-no copied workflows. Change something here + tag → Renovate opens a bump PR in every project.
+no copied workflows. Change something here + tag → Dependabot opens a bump PR in every project.
 
 > **Status: all 8 phases wired** as reusable workflows, plus a `preflight` setup validator. A
 > project consumes them by copying one thin stub ([`stubs/loop.yml`](stubs/loop.yml)).
@@ -20,12 +20,16 @@ agent-loop/                              ← DMCSoftMX/agent-loop (semver-tagged
 │   ├── pr-gate.yml       binding definition-of-done gate
 │   ├── spec-guard.yml    anti-drift: re-hashes the spec comment, must match the pin
 │   ├── ci.yml            stack-aware validate (reads setup.env)
-│   └── preflight.yml     one-shot setup check (workflow_dispatch): secret · Claude App · config · gate enforcement level
+│   ├── preflight.yml     one-shot setup check (workflow_dispatch): secret · Claude App · config · gate enforcement · pin freshness
+│   └── tag-guard.yml     NOT reusable — guards THIS repo's releases (on: push tags)
 │   (spec/plan templates are INLINED in the specify/plan prompts — no separate files, no engine
 │    checkout, so this repo can stay private with zero per-repo tokens.)
-└── stubs/                what each PROJECT repo copies (once)
-    ├── loop.yml          the thin router stub (.github/workflows/loop.yml)
-    └── renovate.json     auto-bumps the engine version across projects
+├── stubs/                what each PROJECT repo copies (once)
+│   ├── loop.yml          the thin router stub (.github/workflows/loop.yml)
+│   └── dependabot.yml    auto-bumps the engine version across projects
+├── CHANGELOG.md          what every tag changed
+├── RELEASING.md          the checklist for cutting one
+└── LICENSE               MIT
 ```
 
 ## How a project consumes it
@@ -37,7 +41,7 @@ every event (labels, `@claude`, PRs, push) to the reusable workflows here, pinne
 jobs:
   specify:
     if: github.event_name == 'issues' && github.event.label.name == 'specify'
-    uses: DMCSoftMX/agent-loop/.github/workflows/specify.yml@v0.7.2
+    uses: DMCSoftMX/agent-loop/.github/workflows/specify.yml@v0.8.0
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
   # … plan · implement · claude · review · pr-gate · spec-guard · ci · preflight (same shape)
@@ -116,8 +120,9 @@ start — a `startup_failure` on preflight **is** that diagnosis.)
   `spec-guard` honor `no-spec` and (wrongly) tried to auto-open the PR, which **`v0.7.2` reverted
   to an assertion** after the smoke run proved it impossible. **`v0.7.1` is broken — never pin it.**
   No runtime fallback — a repo migrates by bumping its pin.
-- Projects pin `@vX` in their stub. **Renovate** ([`stubs/renovate.json`](stubs/renovate.json))
-  opens a **bump PR** in each project on a new tag → you merge it (human gate preserved).
+- Projects pin `@vX` in their stub. **Dependabot** ([`stubs/dependabot.yml`](stubs/dependabot.yml))
+  opens a **bump PR** in each project on a new tag → you merge it (human gate preserved). Native to
+  GitHub — no app to install — and it groups the nine `uses:` lines into a single PR.
 
 ## Branch protection ⚠️ (check-name change)
 
@@ -153,3 +158,15 @@ loop token doesn't have, so confirm "Include administrators" yourself in Setting
 
 PR/issue templates can't be "reused" (GitHub reads them from the repo) — publish them as
 **org defaults** in `DMCSoftMX/.github`, or sync with Cruft/multi-gitter.
+
+## Releasing
+
+A tag is the only thing project repos consume, so cutting one has a checklist:
+**[RELEASING.md](RELEASING.md)**. It exists because two releases went out wrong without it —
+`v0.7.2` shipped a stub pinned at the broken `v0.7.1`, and `v0.7.3` was tagged but never published,
+so GitHub kept announcing `v0.7.0` as *Latest*. `tag-guard` now fails any tag whose
+`stubs/loop.yml` does not pin that same tag. What each version changed: **[CHANGELOG.md](CHANGELOG.md)**.
+
+## License
+
+MIT — see [LICENSE](LICENSE).

@@ -1,0 +1,48 @@
+name: Tag guard
+
+# The stub template that ships INSIDE a tag is what a new repo copies. If it pins a different
+# version, that repo silently runs another engine — which is exactly what v0.7.2 did: it shipped a
+# stub pinned at v0.7.1, the release documented as broken.
+#
+# This is not a reusable workflow; it guards THIS repo's releases. Deleting and re-cutting a tag
+# nobody has adopted is cheap, so failing here is the whole point.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  stub-pins-its-own-tag:
+    name: the stub pins this tag
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Every `uses:` in stubs/loop.yml pins ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          TAG="${{ github.ref_name }}"
+
+          pinned=$(grep -oE 'DMCSoftMX/agent-loop/\.github/workflows/[a-z-]+\.yml@[A-Za-z0-9._-]+' \
+                     stubs/loop.yml | sed 's/.*@//' | sort -u)
+          if [ -z "$pinned" ]; then
+            echo "::error::stubs/loop.yml has no engine pins to check — did the file move?"
+            exit 1
+          fi
+
+          wrong=$(printf '%s\n' "$pinned" | grep -vx "$TAG" || true)
+          if [ -n "$wrong" ]; then
+            echo "::error::Tag ${TAG} ships a stub pinning: $(printf '%s ' $wrong)— a repo copying it would run a different engine. Delete the tag (git push --delete origin ${TAG}), bump stubs/loop.yml + README to ${TAG}, and tag again. See RELEASING.md."
+            exit 1
+          fi
+
+          echo "stubs/loop.yml pins ${TAG} on all $(printf '%s\n' "$pinned" | wc -l) distinct ref(s)."
+
+      - name: CHANGELOG has an entry for ${{ github.ref_name }}
+        run: |
+          if ! grep -qE "^## ${GITHUB_REF_NAME//./\.}( |$)" CHANGELOG.md; then
+            echo "::warning::CHANGELOG.md has no '## ${GITHUB_REF_NAME}' section — the release notes will have nothing to quote."
+          fi

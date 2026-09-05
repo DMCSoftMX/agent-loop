@@ -54,7 +54,7 @@ jobs:
 
       # claude-code-action refuses to review a PR that modifies workflow files (prompt-injection
       # guard) — such a run yields no verdict. Detect it up front so the Verdict step can skip it
-      # cleanly (honest grey/notice) instead of red-flagging a legitimate Renovate/stub-bump PR.
+      # cleanly (honest grey/notice) instead of red-flagging a legitimate Dependabot/stub-bump PR.
       - name: Does this PR touch workflow files?
         id: guard
         env:
