@@ -4,6 +4,32 @@ Every released tag of the engine, newest first. A project repo consumes a tag by
 stub (`uses: DMCSoftMX/agent-loop/.github/workflows/<phase>.yml@vX.Y.Z`), so **a version is only
 real once it is tagged AND its `stubs/loop.yml` pins itself** — see [RELEASING.md](RELEASING.md).
 
+## v1.1.0 — Opus 5 for the authoring phases — 2026-09-05
+
+The three phases that *write* — `specify`, `plan` and `implement` — now default to
+**`claude-opus-5`** instead of `sonnet`. `review`, `claude` and `preflight` are unchanged and stay
+on `sonnet`.
+
+Nothing about the interface moves: the optional `model` input each phase already exposed is
+untouched, so a repo that wants the old behavior keeps it from its own stub:
+
+```yaml
+  implement:
+    uses: DMCSoftMX/agent-loop/.github/workflows/implement.yml@v1.1.0
+    with:
+      model: sonnet
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+```
+
+The new default is a **pinned model id**, not the floating `opus` alias — the engine asks for the
+same model on every run until a release says otherwise.
+
+⚠️ `preflight` still pings on `sonnet`, so a green preflight does **not** prove the account can
+reach `claude-opus-5`. If the model is unavailable on the plan, `specify` is where it surfaces.
+
+Adopt it by bumping the pin; nothing else changes.
+
 ## v1.0.0 — stable interface — 2026-09-05
 
 **No functional change.** The reusable workflows are byte-identical to `v0.8.0`; only the version
