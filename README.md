@@ -37,7 +37,7 @@ every event (labels, `@claude`, PRs, push) to the reusable workflows here, pinne
 jobs:
   specify:
     if: github.event_name == 'issues' && github.event.label.name == 'specify'
-    uses: DMCSoftMX/agent-loop/.github/workflows/specify.yml@v0.7.2
+    uses: DMCSoftMX/agent-loop/.github/workflows/specify.yml@v0.8.0
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
   # … plan · implement · claude · review · pr-gate · spec-guard · ci · preflight (same shape)
