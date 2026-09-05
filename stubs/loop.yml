@@ -1,7 +1,7 @@
 # .github/workflows/loop.yml  — copy this into EACH project repo (the only workflow it needs).
 #
 # THIN STUB: routes every event to the central engine. All logic lives in DMCSoftMX/agent-loop;
-# here you only pin the version (@vX). Renovate (stubs/renovate.json) bumps that pin for you.
+# here you only pin the version (@vX). Dependabot (stubs/dependabot.yml) bumps that pin for you.
 # Per-repo data stays local: CLAUDE.md, setup.env, and the .specs/<issue#>.ref pins.
 #
 # SINCE v0.6.0 (ADR-0002) specs are CANONICAL COMMENTS on the issues of THIS repo — no dedicated

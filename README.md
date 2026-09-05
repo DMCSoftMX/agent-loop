@@ -2,7 +2,7 @@
 
 The **versioned engine** for the spec-driven agent loop. Its logic, templates and prompts are
 maintained **once, here**. Each project repo carries only a thin stub that *calls* this engine —
-no copied workflows. Change something here + tag → Renovate opens a bump PR in every project.
+no copied workflows. Change something here + tag → Dependabot opens a bump PR in every project.
 
 > **Status: all 8 phases wired** as reusable workflows, plus a `preflight` setup validator. A
 > project consumes them by copying one thin stub ([`stubs/loop.yml`](stubs/loop.yml)).
@@ -25,7 +25,7 @@ agent-loop/                              ← DMCSoftMX/agent-loop (semver-tagged
 │    checkout, so this repo can stay private with zero per-repo tokens.)
 └── stubs/                what each PROJECT repo copies (once)
     ├── loop.yml          the thin router stub (.github/workflows/loop.yml)
-    └── renovate.json     auto-bumps the engine version across projects
+    └── dependabot.yml    auto-bumps the engine version across projects
 ```
 
 ## How a project consumes it
@@ -116,8 +116,9 @@ start — a `startup_failure` on preflight **is** that diagnosis.)
   `spec-guard` honor `no-spec` and (wrongly) tried to auto-open the PR, which **`v0.7.2` reverted
   to an assertion** after the smoke run proved it impossible. **`v0.7.1` is broken — never pin it.**
   No runtime fallback — a repo migrates by bumping its pin.
-- Projects pin `@vX` in their stub. **Renovate** ([`stubs/renovate.json`](stubs/renovate.json))
-  opens a **bump PR** in each project on a new tag → you merge it (human gate preserved).
+- Projects pin `@vX` in their stub. **Dependabot** ([`stubs/dependabot.yml`](stubs/dependabot.yml))
+  opens a **bump PR** in each project on a new tag → you merge it (human gate preserved). Native to
+  GitHub — no app to install — and it groups the nine `uses:` lines into a single PR.
 
 ## Branch protection ⚠️ (check-name change)
 
