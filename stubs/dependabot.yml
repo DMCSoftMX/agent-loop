@@ -9,6 +9,9 @@ updates:
     directory: "/"          # scans .github/workflows/
     schedule:
       interval: "weekly"
+    # The integration branch. Without this, Dependabot targets the repo's DEFAULT branch, which is
+    # not always the one the loop merges into. Drop the line if this repo has no `develop`.
+    target-branch: "develop"
     # Engine only. Delete this block to also get actions/checkout, setup-*, and friends.
     allow:
       - dependency-name: "DMCSoftMX/agent-loop*"
