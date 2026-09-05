@@ -4,6 +4,17 @@ Every released tag of the engine, newest first. A project repo consumes a tag by
 stub (`uses: DMCSoftMX/agent-loop/.github/workflows/<phase>.yml@vX.Y.Z`), so **a version is only
 real once it is tagged AND its `stubs/loop.yml` pins itself** — see [RELEASING.md](RELEASING.md).
 
+## v1.0.0 — stable interface — 2026-09-05
+
+**No functional change.** The reusable workflows are byte-identical to `v0.8.0`; only the version
+strings move. What this tag adds is a promise: the surface listed under
+[Stability](README.md#stability) will not change without a major bump.
+
+It is cut now because the last thing that could have forced an early major — renaming the loop's
+labels, branch prefix and trigger phrase — was decided against on 2026-09-05: the names stay.
+
+Adopt it by bumping the pin; a repo on `v0.8.0` gains nothing but the guarantee.
+
 ## v0.8.0 — release hygiene — 2026-09-05
 
 - **MIT `LICENSE`.** The repo is public and had none, which legally meant nobody could reuse it.
