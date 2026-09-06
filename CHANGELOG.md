@@ -4,6 +4,35 @@ Every released tag of the engine, newest first. A project repo consumes a tag by
 stub (`uses: DMCSoftMX/agent-loop/.github/workflows/<phase>.yml@vX.Y.Z`), so **a version is only
 real once it is tagged AND its `stubs/loop.yml` pins itself** — see [RELEASING.md](RELEASING.md).
 
+## v1.1.3 — `implement` publishes the branch itself — 2026-09-05
+
+`implement` no longer depends on the agent pushing. A deterministic step now publishes the branch
+with `GITHUB_TOKEN` after the agent returns — the way `specify` already publishes the spec comment
+instead of trusting the agent to post it.
+
+`v1.1.2` fixed the prompt that told the agent *not* to push, but a prompt is a request. Every
+failure in this release cycle had the same shape: the loop asked the agent for an artifact and
+believed the report instead of checking. This closes the last one in `implement`.
+
+The prompt still tells the agent to push, on purpose — the action's own instructions say the same,
+and contradicting them is exactly what broke `v1.1.0`. In the happy path the new step is a no-op
+(*"Everything up-to-date"*); it earns its place on the runs where it is not.
+
+Two guards it carries:
+
+- **It never publishes an empty branch.** If the agent committed nothing, `HEAD` is still the base
+  commit — pushing it would satisfy the ref assertion, open a PR with no diff, and send the four
+  gates chasing nothing. The step counts commits ahead of `github.sha` and stays out of the way,
+  leaving the assertion to fail loudly.
+- **It never force-pushes.** A divergence means something unexpected happened; that should fail, not
+  be clobbered.
+
+This does not touch ADR-0003. What must come from a human is the **pull request** — one opened with
+this token fires no `pull_request` workflows, so no gate would run. A branch carries no such
+constraint; it is just the artifact the human's click acts on.
+
+Adopt it by bumping the pin; nothing else changes.
+
 ## v1.1.2 — `implement` tells the agent to push — 2026-09-05
 
 `implement`'s prompt forbade the one thing the phase needs:

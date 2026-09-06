@@ -170,6 +170,52 @@ jobs:
             --model ${{ inputs.model }}
             --allowedTools ${{ env.AGENT_TOOLS }}
 
+      # --- deterministic publish: the BRANCH, never the PR ----------------------------------------
+      # Pushing is not left to the agent. v1.1.2 fixed the prompt that told it not to push, but a
+      # prompt is a request; this is the guarantee. `specify` already works this way — the agent
+      # drafts, a deterministic step publishes — and this is the same shape.
+      #
+      # Pushing with GITHUB_TOKEN is NOT what ADR-0003 forbids. What must come from a human is the
+      # PULL REQUEST: one opened with this token fires no `pull_request` workflows, so no gate would
+      # run. A branch carries no such constraint — it is just the artifact the human's click acts on.
+      #
+      # The prompt still tells the agent to push, on purpose. The action's own instructions tell it
+      # to as well, and contradicting those is what caused the v1.1.0 failure. In the happy path this
+      # step is a no-op ("Everything up-to-date"); it earns its place on the runs where it is not.
+      - name: Publish the branch the agent committed
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          BRANCH: ${{ steps.claude.outputs.branch_name }}
+          BASE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "$BRANCH" ]; then
+            echo "::notice::the action reported no branch name — nothing to publish here; the assertion below decides."
+            exit 0
+          fi
+
+          # Prefer the named local branch; fall back to HEAD (the action leaves the checkout on it).
+          if git rev-parse --verify --quiet "refs/heads/${BRANCH}" >/dev/null 2>&1; then
+            SRC="refs/heads/${BRANCH}"
+          else
+            SRC="HEAD"
+          fi
+
+          # An empty branch is worse than no branch: it would satisfy the assertion, produce a PR
+          # with no diff, and send the four gates chasing nothing. Publish only real commits.
+          AHEAD=$(git rev-list --count "${BASE_SHA}..${SRC}" 2>/dev/null || echo 0)
+          if [ "$AHEAD" -eq 0 ]; then
+            echo "::notice::no commits beyond ${BASE_SHA} — the agent committed nothing; not publishing an empty branch."
+            exit 0
+          fi
+
+          # Explicit credentials rather than whatever the action left in the git config. Never force:
+          # a divergence means something unexpected happened and must fail loudly, not be clobbered.
+          echo "publishing ${SRC} (${AHEAD} commit(s)) as ${BRANCH}"
+          git push "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" "${SRC}:refs/heads/${BRANCH}"
+
       # --- deterministic assertion (issue #12) -------------------------------------------------
       # We deliberately do NOT open the PR here. v0.7.1 tried and it cannot work — two hard
       # constraints, both verified on the smoke repo:
