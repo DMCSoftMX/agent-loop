@@ -41,7 +41,7 @@ every event (labels, `@claude`, PRs, push) to the reusable workflows here, pinne
 jobs:
   specify:
     if: github.event_name == 'issues' && github.event.label.name == 'specify'
-    uses: DMCSoftMX/agent-loop/.github/workflows/specify.yml@v1.0.0
+    uses: DMCSoftMX/agent-loop/.github/workflows/specify.yml@v1.1.0
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
   # … plan · implement · claude · review · pr-gate · spec-guard · ci · preflight (same shape)
@@ -110,6 +110,11 @@ start — a `startup_failure` on preflight **is** that diagnosis.)
 - **Stack from `setup.env` at runtime:** `implement`, `claude` and `ci` `source setup.env` from
   the caller, set up the toolchain per `STACK`, and use `INSTALL_CMD` / `ALLOWED_VERIFY_TOOLS` /
   the lint·typecheck·test·build commands. So the stub needs **zero** stack config.
+- **Model per phase:** every Claude phase takes an optional `model` input. The authoring phases —
+  `specify`, `plan`, `implement` — default to **`claude-opus-5`**; `review`, `claude` and
+  `preflight` stay on `sonnet`. Override per repo in the stub (`with:` → `model: sonnet`) when a
+  project wants something cheaper. ⚠️ `preflight`'s ping uses **its own** default, so a green
+  preflight does not prove the account can reach the model the authoring phases will ask for.
 
 ## Versioning & propagation
 
