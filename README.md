@@ -41,7 +41,7 @@ every event (labels, `@claude`, PRs, push) to the reusable workflows here, pinne
 jobs:
   specify:
     if: github.event_name == 'issues' && github.event.label.name == 'specify'
-    uses: DMCSoftMX/agent-loop/.github/workflows/specify.yml@v1.1.3
+    uses: DMCSoftMX/agent-loop/.github/workflows/specify.yml@v1.2.0
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
   # … plan · implement · claude · review · pr-gate · spec-guard · ci · preflight (same shape)
@@ -63,7 +63,7 @@ first real `specify`. It only fires on `workflow_dispatch`; normal events skip i
 *can't* catch from the inside: if the stub lacks its `permissions:` block, preflight itself won't
 start — a `startup_failure` on preflight **is** that diagnosis.)
 
-## The SDD flow (v0.7.2)
+## The SDD flow
 
 1. **`specify`** (label `specify`) → the agent drafts the spec; a deterministic step upserts it as
    the issue's canonical comment. Re-running edits that same comment in place.
@@ -78,6 +78,9 @@ start — a `startup_failure` on preflight **is** that diagnosis.)
    `implement.yml`). No branch ⇒ red run, so a green `implement` always leaves something to open.
    **Fail-closed:** with no spec comment and no `no-spec` label, it stops rather than silently
    building from the issue body.
+   Until you click, the issue carries the **`pr-pending`** label and nothing is running:
+   `is:open label:pr-pending` is the list of laps blocked on a human. The label is created on
+   demand, and a re-run that finds the PR already open removes it.
 5. **Gates** on the PR → `review` · `pr-gate` · `spec-guard` · `ci`. **`spec-guard`** re-fetches the
    pinned comment and re-hashes it: if someone edited the spec after the code was written, the hash
    no longer matches and the PR goes red until it is reconciled. **`review`** posts its review

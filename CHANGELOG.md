@@ -7,7 +7,32 @@ real once it is tagged AND its `stubs/loop.yml` pins itself** — see [RELEASING
 Dates are the **UTC** day the tag was pushed — the same convention the bench’s lap table uses,
 so the two repos agree on when a release happened.
 
-## v1.1.3 — `implement` publishes the branch itself — 2026-09-06
+## v1.2.0 — the pending click is visible — 2026-09-06
+
+A branch with no PR was the one state in this loop that left **no trace**. `implement` went green,
+the issue still carried `claude-implement`, and nothing distinguished *"waiting for your click"*
+from *"still running"* — the phase whose whole design is to stop and wait looked exactly like one in
+flight. It cost two laps that were believed closed and were not.
+
+`implement` now labels the issue **`pr-pending`** when it publishes a branch with no PR, and removes
+it on a re-run that finds the PR already open. `is:open label:pr-pending` is the list of laps
+blocked on a human. The label is created on demand, so a repo needs no setup, and a labelling
+failure is a warning, never a red run: a phase that did its job must not fail over a marker.
+
+The run summary and the annotation now open with **NOT DONE** instead of *"Branch ready"*, which
+read as success.
+
+**What this does not do.** It cannot make you click, and it does not clear the label the moment the
+PR is opened — only a re-run of `implement`, or the issue closing on merge, does that. So between
+the click and the merge the label is briefly stale. Clearing it on `pull_request` would take a new
+job in the stub, and stub changes do not propagate: Dependabot bumps the pin, not the file. The
+imprecision buys not having a migration.
+
+Also: the *SDD flow* heading in the README no longer claims to describe `v0.7.2`.
+
+Adopt it by bumping the pin; the stub does not change.
+
+## v1.1.3 — `implement` publishes the branch itself — 2026-09-06
 
 > ✅ **Validated** on `agent-loop-smoke`: [issue #34](https://github.com/DMCSoftMX/agent-loop-smoke/issues/34) → [PR #35](https://github.com/DMCSoftMX/agent-loop-smoke/pull/35).
 > The publish step ran in its no-op path; its rescue path is not covered by that lap.
@@ -39,7 +64,7 @@ constraint; it is just the artifact the human's click acts on.
 
 Adopt it by bumping the pin; nothing else changes.
 
-## v1.1.2 — `implement` tells the agent to push — 2026-09-06
+## v1.1.2 — `implement` tells the agent to push — 2026-09-06
 
 > ✅ **Validated** on `agent-loop-smoke`: [issue #31](https://github.com/DMCSoftMX/agent-loop-smoke/issues/31) → [PR #32](https://github.com/DMCSoftMX/agent-loop-smoke/pull/32).
 
