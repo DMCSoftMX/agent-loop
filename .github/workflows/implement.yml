@@ -190,13 +190,25 @@ jobs:
         run: |
           set -euo pipefail
 
-          # The action reports the branch it created; fall back to the newest claude/issue-<n>-*
-          # branch (the name embeds a timestamp, so the lexicographic max is the newest).
+          # `branch_name` is the name the action INTENDED to use — it is reported whether or not the
+          # agent ever pushed. Trusting it is what let agent-loop-smoke#27 go green with no branch:
+          # the run summary carried a "Create the PR" link to a ref that did not exist, and the
+          # agent's own comment claimed it had committed. A name is not an artifact, so every
+          # candidate is confirmed against the remote before this step will surface it.
+          ref_exists () { gh api "repos/${REPO}/git/ref/heads/$1" --jq .ref >/dev/null 2>&1; }
+
+          if [ -n "$BRANCH" ] && ! ref_exists "$BRANCH"; then
+            echo "::warning::the action reported branch '${BRANCH}', but no such ref exists on ${REPO} — it was never pushed. Looking for one that was."
+            BRANCH=""
+          fi
+
+          # Fall back to the newest claude/issue-<n>-* branch actually ON the remote (the name
+          # embeds a timestamp, so the lexicographic max is the newest).
           if [ -z "$BRANCH" ]; then
-            BRANCH=$(gh api "repos/${REPO}/git/matching-refs/heads/claude/issue-${ISSUE}-"                        --jq '[.[].ref | sub("^refs/heads/"; "")] | sort | last // empty')
+            BRANCH=$(gh api "repos/${REPO}/git/matching-refs/heads/claude/issue-${ISSUE}-" --jq '[.[].ref | sub("^refs/heads/"; "")] | sort | last // empty')
           fi
           if [ -z "$BRANCH" ]; then
-            echo "::error::implement produced no branch for issue #${ISSUE} — the agent committed nothing. See its progress comment on the issue."
+            echo "::error::implement pushed no branch for issue #${ISSUE} — the agent committed nothing, whatever its progress comment says. Re-apply the 'claude-implement' label to retry."
             exit 1
           fi
 

@@ -4,6 +4,24 @@ Every released tag of the engine, newest first. A project repo consumes a tag by
 stub (`uses: DMCSoftMX/agent-loop/.github/workflows/<phase>.yml@vX.Y.Z`), so **a version is only
 real once it is tagged AND its `stubs/loop.yml` pins itself** — see [RELEASING.md](RELEASING.md).
 
+## v1.1.1 — `implement` asserts the ref, not the name — 2026-09-05
+
+`implement`'s branch assertion trusted `steps.claude.outputs.branch_name` — the name the action
+*intends* to use, which it reports whether or not the agent ever pushed. When the agent edited
+files, reported success and pushed nothing (first seen on `agent-loop-smoke#27`), the step went
+**green**, wrote a "Create the PR ➔" link pointing at a ref that did not exist, and the agent's own
+comment claimed the commit had landed. The step's comment promised the opposite: *"No branch → the
+agent committed nothing → fail loud instead of reporting a green run with no artifact."* It was
+asserting a string was non-empty.
+
+Every candidate name — from the action's output or from the `matching-refs` fallback — is now
+confirmed against the remote (`gh api repos/<repo>/git/ref/heads/<branch>`) before the step will
+surface it. A reported-but-unpushed branch logs a warning and falls through to the fallback query;
+if nothing was pushed at all, the step fails and says so.
+
+Present since `v0.7.2`, when the assertion replaced the auto-opened PR (ADR-0003). Nothing else
+changes — adopt it by bumping the pin.
+
 ## v1.1.0 — Opus 5 for the authoring phases — 2026-09-05
 
 The three phases that *write* — `specify`, `plan` and `implement` — now default to
