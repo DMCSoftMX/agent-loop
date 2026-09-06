@@ -4,6 +4,30 @@ Every released tag of the engine, newest first. A project repo consumes a tag by
 stub (`uses: DMCSoftMX/agent-loop/.github/workflows/<phase>.yml@vX.Y.Z`), so **a version is only
 real once it is tagged AND its `stubs/loop.yml` pins itself** — see [RELEASING.md](RELEASING.md).
 
+## v1.1.2 — `implement` tells the agent to push — 2026-09-05
+
+`implement`'s prompt forbade the one thing the phase needs:
+
+> *"Do NOT try to open the PR yourself and do NOT run `gh` or `git push` — you do not have those
+> tools ... Committing the branch is your last action."*
+
+That is false. `claude-code-action` grants `Bash(.../scripts/git-push.sh:*)` and instructs the agent
+to use it, so the engine's prompt and the action's own contradicted each other — and models broke
+the tie differently. `sonnet` pushed anyway; `claude-opus-5` obeyed the explicit prohibition and
+stopped after the local commit, so no ref ever reached the remote. Before `v1.1.1` that run still
+reported green.
+
+Isolated on `agent-loop-smoke#27` — same repo, same issue, same spec hash, same engine, same action
+version, six minutes apart: `--model claude-opus-5` produced no branch twice, `--model sonnet`
+pushed one with the correct diff and pin. The model was the proximate difference; the prompt was the
+bug, latent since it was written and hidden by a model that ignored it.
+
+Item 5 now tells the agent to publish the branch with the granted script, and keeps the real
+constraint: it must not open the PR itself, because a PR opened with this token fires no gates
+(ADR-0003) — the human's click is the mechanism.
+
+Adopt it by bumping the pin; nothing else changes.
+
 ## v1.1.1 — `implement` asserts the ref, not the name — 2026-09-05
 
 `implement`'s branch assertion trusted `steps.claude.outputs.branch_name` — the name the action
