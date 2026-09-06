@@ -156,9 +156,12 @@ jobs:
                `${{ steps.spec.outputs.ref }}` has ALREADY been written for you — `git add` it and
                include it in the SAME commit as the code. It records the exact spec-comment version
                you worked against; `spec-guard` fails the PR without it.
-            5. Do NOT try to open the PR yourself and do NOT run `gh` or `git push` — you do not
-               have those tools and probing them only wastes turns. Committing the branch is your
-               last action. In your tracking comment, include the "Create PR" link this action
+            5. PUBLISH the branch: commit, then PUSH it with the script this action grants you
+               (`git-push.sh origin <your-branch>`). You DO have that tool. Committing locally is
+               NOT enough — nothing reaches the remote, the run fails, and the human has no branch
+               to open a PR from. Do NOT open the PR yourself and do NOT run `gh`: a PR opened with
+               this token would not fire the gates, which is why the human clicks the link instead
+               (ADR-0003). In your tracking comment, include the "Create PR" link this action
                provides and summarize which "Approach & tasks" items you completed and which you
                did not, calling out anything still red. The PR body must contain
                `Fixes #${{ github.event.issue.number }}`, so put that line in the link's body
