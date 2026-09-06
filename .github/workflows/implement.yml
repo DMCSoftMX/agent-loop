@@ -261,26 +261,43 @@ jobs:
             exit 1
           fi
 
+          # The pending marker. A branch with no PR is the one state in this loop that leaves no
+          # trace: the run is green, the issue still carries `claude-implement`, and nothing
+          # distinguishes "waiting for your click" from "still running". `pr-pending` puts it where
+          # you already look — the issue list — and `is:open label:pr-pending` is the list of laps
+          # blocked on a human. Created on demand so a repo needs no setup, and never fatal: a
+          # labelling problem must not fail a phase that did its job.
+          LABEL=pr-pending
+          gh label create "$LABEL" --repo "$REPO" --color FBCA04 \
+            --description "Branch is ready — waiting for a human to open the PR" >/dev/null 2>&1 || true
+
           # Already opened (a re-run, or the human was quick): the artifact exists, we are done.
           EXISTING=$(gh pr list --repo "$REPO" --head "$BRANCH" --state open --json number --jq '.[0].number // empty')
           if [ -n "$EXISTING" ]; then
+            gh issue edit "$ISSUE" --repo "$REPO" --remove-label "$LABEL" >/dev/null 2>&1 || true
             echo "PR #${EXISTING} is open for ${BRANCH}." >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
+
+          gh issue edit "$ISSUE" --repo "$REPO" --add-label "$LABEL" >/dev/null 2>&1 \
+            || echo "::warning::could not label #${ISSUE} with '${LABEL}' — the run summary link is then the only pending marker."
 
           TITLE=$(gh api "repos/${REPO}/issues/${ISSUE}" --jq .title)
           Q=$(printf '%s' "$TITLE" | jq -sRr @uri)
           B=$(printf 'Fixes #%s' "$ISSUE" | jq -sRr @uri)
           {
-            echo "### Branch ready — open the PR to run the gates"
+            echo "### ⏳ Not done — the loop is blocked on you"
             echo ""
             echo "**[Create the PR ➔](https://github.com/${REPO}/compare/develop...${BRANCH}?quick_pull=1&title=${Q}&body=${B})**"
             echo ""
             echo "Branch \`${BRANCH}\` carries the code and the spec pin. Opening the PR yourself is"
             echo "what fires \`review\` · \`pr-gate\` · \`spec-guard\` · \`ci\` — a PR opened by the loop's own"
             echo "token would not trigger them."
+            echo ""
+            echo "Until then issue #${ISSUE} carries \`${LABEL}\` and **nothing is running**."
+            echo "\`is:open label:${LABEL}\` lists every lap waiting on a click."
           } >> "$GITHUB_STEP_SUMMARY"
-          echo "::notice::Branch ${BRANCH} is ready — open the PR from the link in the run summary (or the agent's comment) to fire the gates."
+          echo "::notice::NOT DONE — branch ${BRANCH} exists but no PR does. Issue #${ISSUE} is labeled '${LABEL}'; open the PR from the run summary link to fire the gates."
 
       # Surface permission_denials_count (retro #3): if the agent was blocked mid-run it may have
       # skipped an intended edit or commit while still reporting green. Warn loud; the pin/PR
