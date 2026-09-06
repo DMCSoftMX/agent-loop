@@ -4,7 +4,13 @@ Every released tag of the engine, newest first. A project repo consumes a tag by
 stub (`uses: DMCSoftMX/agent-loop/.github/workflows/<phase>.yml@vX.Y.Z`), so **a version is only
 real once it is tagged AND its `stubs/loop.yml` pins itself** — see [RELEASING.md](RELEASING.md).
 
-## v1.1.3 — `implement` publishes the branch itself — 2026-09-05
+Dates are the **UTC** day the tag was pushed — the same convention the bench’s lap table uses,
+so the two repos agree on when a release happened.
+
+## v1.1.3 — `implement` publishes the branch itself — 2026-09-06
+
+> ✅ **Validated** on `agent-loop-smoke`: [issue #34](https://github.com/DMCSoftMX/agent-loop-smoke/issues/34) → [PR #35](https://github.com/DMCSoftMX/agent-loop-smoke/pull/35).
+> The publish step ran in its no-op path; its rescue path is not covered by that lap.
 
 `implement` no longer depends on the agent pushing. A deterministic step now publishes the branch
 with `GITHUB_TOKEN` after the agent returns — the way `specify` already publishes the spec comment
@@ -33,7 +39,9 @@ constraint; it is just the artifact the human's click acts on.
 
 Adopt it by bumping the pin; nothing else changes.
 
-## v1.1.2 — `implement` tells the agent to push — 2026-09-05
+## v1.1.2 — `implement` tells the agent to push — 2026-09-06
+
+> ✅ **Validated** on `agent-loop-smoke`: [issue #31](https://github.com/DMCSoftMX/agent-loop-smoke/issues/31) → [PR #32](https://github.com/DMCSoftMX/agent-loop-smoke/pull/32).
 
 `implement`'s prompt forbade the one thing the phase needs:
 
@@ -57,7 +65,10 @@ constraint: it must not open the PR itself, because a PR opened with this token 
 
 Adopt it by bumping the pin; nothing else changes.
 
-## v1.1.1 — `implement` asserts the ref, not the name — 2026-09-05
+## v1.1.1 — `implement` asserts the ref, not the name — 2026-09-06 — **never validated**
+
+> ⚠️ **Never validated — do not pin.** The false green is fixed here, but `implement` still
+> cannot deliver: the run fails loudly instead of lying. The cause is fixed in `v1.1.2`.
 
 `implement`'s branch assertion trusted `steps.claude.outputs.branch_name` — the name the action
 *intends* to use, which it reports whether or not the agent ever pushed. When the agent edited
@@ -75,7 +86,11 @@ if nothing was pushed at all, the step fails and says so.
 Present since `v0.7.2`, when the assertion replaced the auto-opened PR (ADR-0003). Nothing else
 changes — adopt it by bumping the pin.
 
-## v1.1.0 — Opus 5 for the authoring phases — 2026-09-05
+## v1.1.0 — Opus 5 for the authoring phases — 2026-09-06 — **never validated**
+
+> ⚠️ **Never validated — do not pin.** `implement` cannot deliver on this tag: the agent commits
+> and never pushes, and the phase reports **green** anyway. Both halves are fixed across `v1.1.1`
+> and `v1.1.2`. The bench records it as *Failed*.
 
 The three phases that *write* — `specify`, `plan` and `implement` — now default to
 **`claude-opus-5`** instead of `sonnet`. `review`, `claude` and `preflight` are unchanged and stay
@@ -154,14 +169,14 @@ App token before returning (`DELETE /installation/token`). Reverted in `v0.7.2`.
   advisory (they are advisory on a private Free repo, where the human is the gate).
 - Dropped the invalid `administration` permission key, which broke stub parsing.
 
-## v0.6.0 — 2026-07-24 — specs as issue comments (ADR-0002)
+## v0.6.0 — 2026-07-25 — specs as issue comments (ADR-0002)
 
 The spec stops being a file in a dedicated repo and becomes the issue's canonical comment. The pin
 `.specs/<n>.ref` moves from a git sha to a **sha256 of the comment body**, so drift detection
 survives. Consequences: no GitHub App, no cross-repo token, no specs repo, and `spec-guard` becomes
 secret-free — which is why it works on fork PRs.
 
-## v0.5.0 – v0.5.4 — 2026-07-23 — specs in a dedicated repo (ADR-0001, retired)
+## v0.5.0 – v0.5.4 — 2026-07-24 — specs in a dedicated repo (ADR-0001, retired)
 
 The spec lived in `<account>/specs`, referenced from the code repo. It worked and was validated end
 to end, but the first cross-account adoption exposed the whole tax it implied — an App to mint a
