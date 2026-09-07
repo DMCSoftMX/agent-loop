@@ -1,0 +1,12 @@
+# Line endings are decided HERE, not by each machine's core.autocrlf.
+#
+# Why this file exists: two headings in CHANGELOG.md reached the repo with CRLF while every other
+# line was LF, because a tool on a Windows box wrote them back that way and nothing normalized them.
+# The result was a one-line edit that rendered as a 391-line diff.
+#
+# `text=auto eol=lf` means: normalize to LF in the repository, and check out LF everywhere —
+# including Windows. That matters most for the workflows: GitHub Actions runs them on Linux, and a
+# stray CR at the end of a `run:` line becomes part of the command.
+#
+# Every tracked file here is text (12 .yml, 3 .md, LICENSE); there is nothing to exempt.
+* text=auto eol=lf
